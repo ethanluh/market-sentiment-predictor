@@ -2,6 +2,9 @@
 .env
 *.env
 
+# Docs
+docs/project_plan.md
+
 # Data
 data/cache/
 data/raw/*.csv
