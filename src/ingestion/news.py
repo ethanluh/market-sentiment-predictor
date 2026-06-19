@@ -19,6 +19,7 @@ from src.graph.categories import (
     NODE_UNINFORMED_RETAIL,
 )
 from src.sentiment.aggregation import ScoredArticle
+from src.utils.datetime_utils import parse_iso_utc
 
 # Map a NewsAPI source id/name to the credibility key used by aggregation.
 # Keys are matched case-insensitively as substrings of the source name.
@@ -80,12 +81,9 @@ def _parse_published(value: str | None) -> datetime:
     if not value:
         return datetime.now(timezone.utc)
     try:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parse_iso_utc(value)
     except ValueError:
         return datetime.now(timezone.utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def _article_from_payload(item: dict) -> NewsArticle:

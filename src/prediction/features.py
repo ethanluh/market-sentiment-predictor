@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from functools import lru_cache
 from typing import TYPE_CHECKING, Callable
 
@@ -36,6 +36,7 @@ from src.graph.categories import (
 from src.graph.diffusion import estimate_lag
 from src.graph.sector import build_sector_graph, sector_proximity
 from src.sentiment.aggregation import CREDIBILITY, ScoredArticle, aggregate
+from src.utils.datetime_utils import to_utc
 
 if TYPE_CHECKING:  # avoid import cost / cycles at runtime
     from src.prediction.regime import RegimeClassifier
@@ -69,13 +70,6 @@ FEATURE_NAMES: list[str] = [
     "return_lag_1",
     "regime_label",
 ]
-
-
-def _coerce_utc(dt: datetime) -> datetime:
-    """Coerce a (possibly naive) datetime to tz-aware UTC."""
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -157,7 +151,7 @@ def compute_technical_features(
     Returns ``np.nan`` for any feature whose lookback window is not satisfied
     rather than raising.
     """
-    as_of = _coerce_utc(as_of)
+    as_of = to_utc(as_of)
     short_w, long_w = mom_windows
 
     window = prices[prices.index <= as_of]
@@ -236,7 +230,7 @@ def build_feature_vector(
     the sector graph helpers. ``origin_node`` defaults to the highest-credibility
     source present in ``articles``.
     """
-    as_of = _coerce_utc(as_of)
+    as_of = to_utc(as_of)
     origin = origin_node or select_origin_node(articles)
 
     sentiment = aggregate(articles, as_of=as_of)

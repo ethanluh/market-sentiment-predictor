@@ -13,23 +13,16 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from src.utils.datetime_utils import to_date_key
+
 # Cache root; resolved relative to the repository root (four parents up from
 # this file: ingestion -> src -> repo).
 CACHE_ROOT = Path(__file__).resolve().parents[2] / "data" / "cache"
 
 
-def _date_key(when: date | datetime | str) -> str:
-    """Normalize a date-like value to an ISO ``YYYY-MM-DD`` string."""
-    if isinstance(when, datetime):
-        return when.date().isoformat()
-    if isinstance(when, date):
-        return when.isoformat()
-    return str(when)
-
-
 def cache_path(source: str, ticker: str, when: date | datetime | str) -> Path:
     """Return the cache file path for a ``(source, ticker, date)`` triple."""
-    key = _date_key(when)
+    key = to_date_key(when)
     return CACHE_ROOT / source / f"{ticker.upper()}_{key}.json"
 
 

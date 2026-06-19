@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.graph.categories import NODE_SEC_CORP
+from src.utils.datetime_utils import to_utc
 
 logger = logging.getLogger("ingestion.filings")
 
@@ -36,10 +37,6 @@ class Filing:
     filed_at: datetime  # tz-aware UTC
     path: str
     source_category: str = NODE_SEC_CORP
-
-
-def _utc(dt: datetime) -> datetime:
-    return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
 
 
 def _parse_filing_date(entry: Path) -> datetime | None:
@@ -89,7 +86,7 @@ def fetch_filings(
     EDGAR_DOWNLOAD_ROOT.mkdir(parents=True, exist_ok=True)
     dl = Downloader(_DEFAULT_UA_NAME, email, str(EDGAR_DOWNLOAD_ROOT))
 
-    after_str = _utc(after).date().isoformat() if after is not None else None
+    after_str = to_utc(after).date().isoformat() if after is not None else None
     dl.get(form, ticker, limit=limit, after=after_str, download_details=True)
 
     # The downloader writes to <root>/sec-edgar-filings/<ticker>/<form>/<id>/.
