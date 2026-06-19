@@ -211,6 +211,7 @@ def run_backtest(
     *,
     peers: list[str] | None = None,
     vix: "pd.Series | None" = None,
+    trends: "pd.Series | None" = None,
     use_news_archive: bool = False,
     lookback_days: int = 7,
 ) -> BacktestResult:
@@ -230,6 +231,8 @@ def run_backtest(
         live; otherwise it is 0.0.
       - ``vix`` fits a :class:`RegimeClassifier` so ``regime_label`` is live;
         otherwise it is -1.
+      - ``trends`` (a Google search-interest series) makes
+        ``search_interest_zscore`` live; otherwise it is 0.0.
     """
     from src.ingestion.price import fetch_prices  # lazy: network
     from src.prediction.baselines import horizon_to_interval, horizon_to_steps
@@ -269,13 +272,14 @@ def run_backtest(
             ("sentiment_agg/estimated_lag_hours", use_news_archive),
             ("sector_proximity", bool(peers)),
             ("regime_label", vix is not None),
+            ("search_interest_zscore", trends is not None),
         ]
         if not active
     ]
     if inert:
         logger.warning(
             "run_backtest: the following features are neutralized in this call: %s. "
-            "Enable use_news_archive / peers / vix to activate them.",
+            "Enable use_news_archive / peers / vix / trends to activate them.",
             ", ".join(inert),
         )
 
@@ -287,6 +291,7 @@ def run_backtest(
         sector_returns=sector_returns,
         vix=vix,
         regime_classifier=regime_classifier,
+        trends=trends,
     ).dropna()
 
     steps = horizon_to_steps(horizon)

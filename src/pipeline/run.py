@@ -25,6 +25,8 @@ from typing import TYPE_CHECKING, Callable, TypeVar
 from src.sentiment.aggregation import ScoredArticle
 
 if TYPE_CHECKING:  # for type-only annotations of the lazy source fetchers
+    import pandas as pd
+
     from src.ingestion.filings import Filing
     from src.ingestion.social import SocialPost
 
@@ -61,6 +63,7 @@ class IngestBundle:
     prices: object  # pd.DataFrame
     sector_returns: object  # pd.DataFrame
     origin_hint: str | None = None  # forced diffusion origin (e.g. sec_corp on a filing)
+    trends: object | None = None  # pd.Series of search interest (retail attention)
 
 
 @dataclass
@@ -143,6 +146,15 @@ def _ingest(
     filings = _safe("filings", _fetch_filings) or []
     origin_hint = NODE_SEC_CORP if any(f.filed_at >= since for f in filings) else None
 
+    # Google Trends (retail attention) — degrades gracefully: a failure leaves the
+    # search_interest_zscore feature at its neutral 0.0, so the pipeline still runs.
+    def _fetch_trends() -> "pd.Series":
+        from src.ingestion.trends import fetch_trends
+
+        return fetch_trends(ticker, start=price_start)
+
+    trends = _safe("trends", _fetch_trends)
+
     return IngestBundle(
         ticker=ticker,
         as_of=as_of,
@@ -151,6 +163,7 @@ def _ingest(
         prices=prices,
         sector_returns=sector_returns,
         origin_hint=origin_hint,
+        trends=trends,
     )
 
 
@@ -178,6 +191,7 @@ def _features(bundle: IngestBundle, articles: list[ScoredArticle]):  # type: ign
         bundle.prices,
         bundle.sector_returns,
         origin_node=bundle.origin_hint,
+        trends=bundle.trends,
     )
 
 

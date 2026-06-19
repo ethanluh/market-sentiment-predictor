@@ -303,3 +303,23 @@ class TestRunBacktestInterval:
             vix=vix,
         )
         assert result.n_predictions > 0
+
+    def test_trends_wires_search_interest(self, monkeypatch):
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+
+        rng = np.random.default_rng(2)
+        trends = pd.Series(rng.integers(0, 100, len(prices)).astype(float), index=prices.index)
+
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1d",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            trends=trends,
+        )
+        assert result.n_predictions > 0

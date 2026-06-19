@@ -41,7 +41,13 @@ Fetched via `sec-edgar-downloader` (`src/ingestion/filings.py`); used as the
 | Source | Library | Status |
 |---|---|---|
 | Reddit (WSB, investing, stocks) | `praw` | ✅ retail sentiment |
-| Google Trends | `pytrends` | 🔜 retail attention proxy |
+| Google Trends | `pytrends` | ✅ retail attention proxy (`search_interest_zscore` feature) |
+
+Google Trends feeds a point-in-time `search_interest_zscore` feature (a z-scored
+*attention* signal, distinct from sentiment) via `src/ingestion/trends.py`. The
+endpoint is unofficial: windows longer than ~9 months return weekly (not daily)
+granularity, and it may rate-limit — the pipeline degrades gracefully to a
+neutral value when no data is returned.
 
 ## Earnings Transcripts 🔜
 
