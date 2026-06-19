@@ -3,7 +3,11 @@ Canonical node category definitions for the information diffusion graph.
 All other modules import from here; never hardcode category strings elsewhere.
 """
 
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
 
 NODE_SEC_CORP = "sec_corp"
 NODE_INSTITUTIONAL = "institutional"
@@ -39,3 +43,33 @@ DEFAULT_EDGES: list[EdgeConfig] = [
         NODE_INFORMED_RETAIL, NODE_UNINFORMED_RETAIL, prob=0.40, lag_mean=12.00, lag_std=6.00
     ),
 ]
+
+
+def load_calibrated_edges(path: str | Path) -> list[EdgeConfig]:
+    """
+    Return the ``DEFAULT_EDGES`` topology with ``prob`` / ``lag_mean`` /
+    ``lag_std`` overridden from a ``calibrated_edges.json`` (written by
+    ``scripts/calibrate_graph.py``).
+
+    The JSON is keyed ``"src__tgt"`` with optional ``prob`` / ``lag_mean`` /
+    ``lag_std`` fields. Edges absent from the file keep their default priors;
+    keys not in the default topology are ignored (the graph topology is fixed
+    by ``DEFAULT_EDGES``). The result is suitable for
+    ``diffusion.build_graph(edges=...)`` / ``estimate_lag(edges=...)``.
+    """
+    with open(path, "r", encoding="utf-8") as fh:
+        calibrated = json.load(fh)
+
+    edges: list[EdgeConfig] = []
+    for e in DEFAULT_EDGES:
+        entry = calibrated.get(f"{e.source}__{e.target}", {})
+        edges.append(
+            EdgeConfig(
+                source=e.source,
+                target=e.target,
+                prob=float(entry.get("prob", e.prob)),
+                lag_mean=float(entry.get("lag_mean", e.lag_mean)),
+                lag_std=float(entry.get("lag_std", e.lag_std)),
+            )
+        )
+    return edges
