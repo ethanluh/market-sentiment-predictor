@@ -11,10 +11,12 @@ import pytest
 from src.graph.categories import NODE_SEC_CORP, NODE_UNINFORMED_RETAIL
 from src.prediction.features import (
     FEATURE_NAMES,
+    build_feature_matrix,
     build_feature_vector,
     compute_technical_features,
     select_origin_node,
 )
+from src.prediction.regime import RegimeClassifier
 from src.sentiment.aggregation import ScoredArticle
 
 
@@ -136,3 +138,60 @@ class TestFeatureVector:
         )
         after = build_feature_vector("AAPL", as_of, [], prices, future).sector_proximity
         assert before == after
+
+
+class TestVixAsof:
+    def test_regime_resolved_via_asof_on_offset_grid(self):
+        # VIX stamped at midnight; as_of grid at 21:00 (close). Exact-membership
+        # would miss every row, but asof picks the prior value -> live regime.
+        prices = _make_prices(n=60)
+        sector = _make_sector_returns(n=60)
+        clf = RegimeClassifier(k=3).fit(
+            np.concatenate([np.full(20, 13.0), np.full(20, 20.0), np.full(20, 35.0)])
+        )
+        vix = pd.Series(
+            np.linspace(12, 36, 60),
+            index=pd.date_range("2023-01-01", periods=60, freq="D", tz="UTC"),
+        )
+        as_of_index = pd.date_range("2023-01-05 21:00", periods=20, freq="D", tz="UTC")
+
+        matrix = build_feature_matrix(
+            "AAPL",
+            as_of_index,
+            articles_by_time=lambda _a: [],
+            prices=prices,
+            sector_returns=sector,
+            vix=vix,
+            regime_classifier=clf,
+        )
+        # Regime feature is live (not all the -1 "unknown" sentinel).
+        assert (matrix["regime_label"] >= 0).any()
+
+    def test_tz_mismatch_warns_and_degrades(self, caplog):
+        import logging
+
+        prices = _make_prices(n=40)
+        sector = _make_sector_returns(n=40)
+        clf = RegimeClassifier(k=3).fit(
+            np.concatenate([np.full(14, 13.0), np.full(13, 20.0), np.full(13, 35.0)])
+        )
+        # tz-naive VIX index cannot be compared to tz-aware as_of -> no hits.
+        vix = pd.Series(
+            np.linspace(12, 36, 40),
+            index=pd.date_range("2023-01-01", periods=40, freq="D"),
+        )
+        as_of_index = pd.date_range("2023-01-01", periods=40, freq="D", tz="UTC")
+        with caplog.at_level(logging.WARNING, logger="prediction.features"):
+            matrix = build_feature_matrix(
+                "AAPL",
+                as_of_index,
+                articles_by_time=lambda _a: [],
+                prices=prices,
+                sector_returns=sector,
+                vix=vix,
+                regime_classifier=clf,
+            )
+        assert (matrix["regime_label"] == -1).all()
+        assert any(
+            "VIX was provided but matched no timestamps" in r.message for r in caplog.records
+        )

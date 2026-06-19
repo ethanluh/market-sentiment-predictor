@@ -115,6 +115,37 @@ class TestNews:
         with pytest.raises(RuntimeError):
             fetch_news("AAPL")
 
+    def test_fetch_news_tolerates_null_published(self, monkeypatch):
+        # NewsAPI can return publishedAt: null or omit it; one bad article must
+        # not abort the whole batch.
+        payload = {
+            "articles": [
+                {"title": "a", "source": {"name": "Reuters"}, "publishedAt": None},
+                {"title": "b", "source": {"name": "WSJ"}},  # key absent
+                {
+                    "title": "c",
+                    "source": {"name": "FT"},
+                    "publishedAt": "2023-01-02T10:00:00Z",
+                },
+            ]
+        }
+
+        class _Client:
+            def __init__(self, api_key):
+                pass
+
+            def get_everything(self, **kwargs):
+                return payload
+
+        monkeypatch.setitem(sys.modules, "newsapi", types.SimpleNamespace(NewsApiClient=_Client))
+        monkeypatch.setenv("NEWS_API_KEY", "dummy")
+
+        from src.ingestion.news import fetch_news
+
+        articles = fetch_news("AAPL")
+        assert len(articles) == 3
+        assert all(a.published_at.tzinfo is not None for a in articles)
+
 
 class TestFilings:
     def test_parse_acceptance_datetime(self, tmp_path):

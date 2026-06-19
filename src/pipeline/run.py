@@ -133,9 +133,10 @@ def _load_model(model_path: str | None):  # type: ignore[no-untyped-def]
 
     if model_path:
         return QuantileReturnModel.load(model_path)
-    # No trained model: return an unfitted model; _predict will yield {} which
-    # the caller surfaces as an empty predictions map.
-    return QuantileReturnModel(backend="linear")
+    # No trained model: return an unfitted model with the default backend
+    # (consistent with training/backtest); _predict yields {} which the caller
+    # surfaces as an empty predictions map.
+    return QuantileReturnModel()
 
 
 def _top_articles(articles: list[ScoredArticle], limit: int = 5) -> list[dict]:

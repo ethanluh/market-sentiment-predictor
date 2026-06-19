@@ -18,8 +18,10 @@ scientific stack alone. All technical features use only data at or before
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import TYPE_CHECKING, Callable
 
 import numpy as np
@@ -37,6 +39,22 @@ from src.sentiment.aggregation import CREDIBILITY, ScoredArticle, aggregate
 
 if TYPE_CHECKING:  # avoid import cost / cycles at runtime
     from src.prediction.regime import RegimeClassifier
+
+logger = logging.getLogger("prediction.features")
+
+
+@lru_cache(maxsize=None)
+def _cached_estimate_lag(origin_node: str, alpha: float) -> float:
+    """
+    Memoized :func:`estimate_lag` for the default graph.
+
+    ``estimate_lag`` depends only on ``(origin_node, alpha)`` and the static
+    ``DEFAULT_EDGES`` graph, but rebuilds the graph and runs ~500 matrix
+    exponentials each call. ``build_feature_matrix`` invokes it once per row,
+    so caching collapses N×500 ``expm`` calls to one per distinct origin node.
+    """
+    return estimate_lag(origin_node, alpha=alpha)
+
 
 # Canonical numeric-feature order. Single source of truth shared with
 # model.py; excludes identifiers (ticker, as_of) and the non-numeric origin.
@@ -83,18 +101,9 @@ class FeatureVector:
 
     def to_array(self) -> np.ndarray:
         """Numeric vector ordered by ``FEATURE_NAMES`` (for sklearn)."""
-        values = {
-            "sentiment_agg": self.sentiment_agg,
-            "estimated_lag_hours": self.estimated_lag_hours,
-            "sector_proximity": self.sector_proximity,
-            "momentum_5d": self.momentum_5d,
-            "momentum_20d": self.momentum_20d,
-            "realized_vol_20d": self.realized_vol_20d,
-            "volume_zscore": self.volume_zscore,
-            "return_lag_1": self.return_lag_1,
-            "regime_label": float(self.regime_label),
-        }
-        return np.array([values[name] for name in FEATURE_NAMES], dtype=float)
+        # Field names match FEATURE_NAMES, so derive the vector directly to avoid
+        # a hand-maintained parallel list that can drift.
+        return np.array([float(getattr(self, name)) for name in FEATURE_NAMES], dtype=float)
 
     def to_series(self) -> pd.Series:
         """Named numeric series indexed by ``FEATURE_NAMES``."""
@@ -188,6 +197,24 @@ def _regime_label(classifier: "RegimeClassifier | None", vix_value: float | None
     return int(classifier.predict(np.array([vix_value]))[0])
 
 
+def _vix_asof(vix: pd.Series, as_of: "pd.Timestamp") -> float | None:
+    """
+    Point-in-time VIX lookup: the last value at or before ``as_of``.
+
+    Uses ``Series.asof`` (last-known value) rather than exact-index membership so
+    a mismatched time grid or close-time stamping does not silently zero out the
+    regime feature. Returns ``None`` when no prior value exists or the index is
+    incompatible (e.g. tz mismatch).
+    """
+    try:
+        value = vix.asof(as_of)
+    except (TypeError, KeyError):
+        return None
+    if value is None or pd.isna(value):
+        return None
+    return float(value)
+
+
 def build_feature_vector(
     ticker: str,
     as_of: datetime,
@@ -213,7 +240,7 @@ def build_feature_vector(
     origin = origin_node or select_origin_node(articles)
 
     sentiment = aggregate(articles, as_of=as_of)
-    lag = estimate_lag(origin, alpha=alpha)
+    lag = _cached_estimate_lag(origin, alpha)
 
     if sector_returns is not None and not sector_returns.empty:
         # Point-in-time: only use correlations observable at/ before as_of so the
@@ -262,10 +289,15 @@ def build_feature_matrix(
     Rows with insufficient history will contain NaNs; callers are expected to
     drop or impute them.
     """
+    vix_sorted = vix.sort_index() if vix is not None else None
+    vix_hits = 0
+
     rows: list[pd.Series] = []
     for as_of in as_of_index:
         as_of_dt = as_of.to_pydatetime()
-        vix_value = float(vix.loc[as_of]) if vix is not None and as_of in vix.index else None
+        vix_value = _vix_asof(vix_sorted, as_of) if vix_sorted is not None else None
+        if vix_value is not None:
+            vix_hits += 1
         fv = build_feature_vector(
             ticker,
             as_of_dt,
@@ -277,6 +309,12 @@ def build_feature_matrix(
             **kwargs,  # type: ignore[arg-type]
         )
         rows.append(fv.to_series())
+
+    if vix_sorted is not None and len(as_of_index) > 0 and vix_hits == 0:
+        logger.warning(
+            "build_feature_matrix: VIX was provided but matched no timestamps "
+            "(check tz / time-grid alignment); regime_label is -1 for all rows."
+        )
 
     if not rows:
         return pd.DataFrame(columns=FEATURE_NAMES)

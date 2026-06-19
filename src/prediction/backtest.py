@@ -149,7 +149,7 @@ def run_backtest(
     start: str,
     end: str | None = None,
     horizon: str = "1d",
-    backend: str = "linear",
+    backend: str = "gbr",
     train_window: int = 252,
     test_window: int = 21,
 ) -> BacktestResult:
@@ -209,7 +209,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--start", required=True)
     parser.add_argument("--end", default=None)
     parser.add_argument("--horizon", default="1d")
-    parser.add_argument("--backend", default="linear", choices=["linear", "gbr"])
+    parser.add_argument("--backend", default="gbr", choices=["linear", "gbr"])
     args = parser.parse_args(argv)
 
     result = run_backtest(

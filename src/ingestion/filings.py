@@ -7,6 +7,7 @@ origin and are categorised as ``sec_corp`` nodes in the diffusion graph.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.graph.categories import NODE_SEC_CORP
+
+logger = logging.getLogger("ingestion.filings")
 
 # Where sec-edgar-downloader writes its filing tree.
 EDGAR_DOWNLOAD_ROOT = Path(__file__).resolve().parents[2] / "data" / "raw" / "edgar"
@@ -44,6 +47,11 @@ def _parse_filing_date(entry: Path) -> datetime | None:
     Parse the true filing timestamp from an accession folder's EDGAR submission
     header (``<ACCEPTANCE-DATETIME>`` then ``FILED AS OF DATE:``). Returns
     ``None`` if no submission file/header is found.
+
+    ``<ACCEPTANCE-DATETIME>`` carries the full timestamp and is preferred; the
+    ``FILED AS OF DATE:`` fallback is date-only and is stamped at 00:00 UTC, so
+    an intraday same-day feature could in principle see it slightly early. Real
+    EDGAR submissions include the acceptance datetime, so this is a rare edge.
     """
     candidates = ["full-submission.txt", "primary-document.html", "filing-details.html"]
     for name in candidates:
@@ -91,11 +99,15 @@ def fetch_filings(
         for entry in base.iterdir():
             if not entry.is_dir():
                 continue
-            # Prefer the real EDGAR filing date; fall back to the download mtime
-            # only when the submission header is unavailable.
-            filed_at = _parse_filing_date(entry) or datetime.fromtimestamp(
-                entry.stat().st_mtime, tz=timezone.utc
-            )
+            # Use only the real EDGAR filing timestamp. If the submission header
+            # can't be parsed we skip the filing rather than substituting the
+            # download mtime, which would corrupt recency decay and risk
+            # look-ahead (the project's no-look-ahead rule favors dropping over
+            # guessing a date).
+            filed_at = _parse_filing_date(entry)
+            if filed_at is None:
+                logger.warning("filings: unparseable filing date, skipping %s", entry)
+                continue
             filings.append(
                 Filing(
                     ticker=ticker.upper(),

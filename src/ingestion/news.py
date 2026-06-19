@@ -70,9 +70,19 @@ def map_source_to_category(source: str) -> str:
     return NODE_FIN_PRESS
 
 
-def _parse_published(value: str) -> datetime:
-    """Parse a NewsAPI ISO timestamp into a tz-aware UTC datetime."""
-    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+def _parse_published(value: str | None) -> datetime:
+    """
+    Parse a NewsAPI ISO timestamp into a tz-aware UTC datetime.
+
+    NewsAPI may return ``publishedAt: null`` or omit the field; rather than
+    crashing the whole batch, fall back to "now" (UTC) for such articles.
+    """
+    if not value:
+        return datetime.now(timezone.utc)
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(timezone.utc)

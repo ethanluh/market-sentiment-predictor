@@ -55,3 +55,12 @@ class TestAggregation:
         ]
         score = aggregate(articles, as_of=self.now)
         assert -1.0 <= score <= 1.0
+
+    def test_named_outlets_decay_like_fin_press(self):
+        # Per-outlet keys emitted by news.map_source_to_category must have their
+        # own tuned decay (== fin_press), not fall back to the faster "unknown".
+        from src.sentiment.aggregation import DECAY_LAMBDA
+
+        for outlet in ("reuters", "bloomberg", "wsj", "ft", "benzinga", "seeking_alpha"):
+            assert outlet in DECAY_LAMBDA
+            assert DECAY_LAMBDA[outlet] == DECAY_LAMBDA[NODE_FIN_PRESS]

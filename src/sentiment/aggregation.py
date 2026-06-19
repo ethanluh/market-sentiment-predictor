@@ -35,10 +35,18 @@ CREDIBILITY: dict[str, float] = {
     "unknown": 0.3,
 }
 
-# Decay rate (lambda) per source category — faster decay = more time-sensitive
+# Decay rate (lambda) per source category — faster decay = more time-sensitive.
+# Per-outlet keys mirror the financial-press bucket (0.10) so a named outlet
+# (Reuters, WSJ, ...) does not decay faster than a generic press article.
 DECAY_LAMBDA: dict[str, float] = {
     NODE_SEC_CORP: 0.02,  # slow decay; filings stay relevant
     NODE_FIN_PRESS: 0.10,
+    "reuters": 0.10,
+    "bloomberg": 0.10,
+    "wsj": 0.10,
+    "ft": 0.10,
+    "benzinga": 0.10,
+    "seeking_alpha": 0.10,
     NODE_INFORMED_RETAIL: 0.20,
     NODE_UNINFORMED_RETAIL: 0.40,  # fast decay; social noise
     "unknown": 0.15,
