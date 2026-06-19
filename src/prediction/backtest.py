@@ -24,10 +24,25 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 
+from src.prediction.baselines import (
+    ARIMABaseline,
+    BaselinePredictor,
+    GARCHBaseline,
+    MomentumBaseline,
+)
 from src.prediction.features import FEATURE_NAMES
-from src.prediction.model import QUANTILES, QuantileReturnModel
+from src.prediction.model import QUANTILES, QuantilePrediction, QuantileReturnModel
 
 logger = logging.getLogger("prediction.backtest")
+
+
+def _default_baselines() -> dict[str, BaselinePredictor]:
+    """The standard benchmark set compared against the quantile model."""
+    return {
+        "momentum": MomentumBaseline(),
+        "arima": ARIMABaseline(),
+        "garch": GARCHBaseline(),
+    }
 
 
 def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, quantile: float) -> float:
@@ -55,6 +70,8 @@ class BacktestResult:
     pnl_curve: pd.Series = field(default_factory=lambda: pd.Series(dtype=float))
     sharpe: float = 0.0
     n_predictions: int = 0
+    # name -> {p10,p50,p90} mean pinball loss for each baseline (empty if not run).
+    baseline_pinball: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def _sharpe(returns: pd.Series, periods_per_year: int = 252) -> float:
@@ -73,6 +90,8 @@ def walk_forward(
     step: int = 21,
     refit: bool = True,
     horizon: str = "1d",
+    returns: pd.Series | None = None,
+    baselines: dict[str, BaselinePredictor] | None = None,
 ) -> BacktestResult:
     """
     Rolling walk-forward backtest for a single ``horizon``.
@@ -80,6 +99,11 @@ def walk_forward(
     For each fold the model is fit on a ``train_window`` slice and evaluated on
     the following ``test_window`` slice. Features at time *t* use only data
     <= *t* (guaranteed upstream), so there is no look-ahead.
+
+    When ``returns`` (the log-return series aligned to ``features.index``) is
+    supplied, the baselines in ``baselines`` (default: momentum / ARIMA / GARCH)
+    are also fit per fold on returns up to the train-window end and scored, so
+    ``result.baseline_pinball`` gives a model-vs-baseline comparison.
     """
     features = features[FEATURE_NAMES]
     y = targets[horizon]
@@ -88,6 +112,16 @@ def walk_forward(
         raise ValueError(
             f"Not enough rows ({n}) for train_window={train_window} + " f"test_window={test_window}"
         )
+
+    if returns is not None and baselines is None:
+        baselines = _default_baselines()
+    use_baselines = returns is not None and bool(baselines)
+    # name -> quantile -> per-prediction baseline forecasts (aligned to `actuals`).
+    baseline_preds: dict[str, dict[float, list[float]]] = (
+        {name: {q: [] for q in QUANTILES} for name in baselines}
+        if (use_baselines and baselines is not None)
+        else {}
+    )
 
     preds_by_q: dict[float, list[float]] = {q: [] for q in QUANTILES}
     actuals: list[float] = []
@@ -107,6 +141,18 @@ def walk_forward(
             start += step
             continue
 
+        # One baseline forecast per fold (fit on returns up to the train end).
+        fold_baseline: dict[str, QuantilePrediction] = {}
+        if use_baselines:
+            assert returns is not None and baselines is not None  # narrowed by use_baselines
+            train_returns = returns.loc[: X_tr.index[-1]]
+            for name, baseline in baselines.items():
+                try:
+                    fold_baseline[name] = baseline.fit(train_returns).predict(horizon)
+                except Exception:  # baselines degrade internally; guard alignment anyway
+                    logger.warning("baseline %s failed this fold; using zero forecast", name)
+                    fold_baseline[name] = QuantilePrediction(0.0, 0.0, 0.0)
+
         fold = model.predict(X_te).get(horizon, [])
         for i, qp in enumerate(fold):
             actual = float(y.iloc[start + train_window + i])
@@ -118,6 +164,10 @@ def walk_forward(
             actuals.append(actual)
             pnl.append(np.sign(qp.p50) * actual)
             pnl_index.append(X_te.index[i])
+            for name, bqp in fold_baseline.items():
+                baseline_preds[name][0.10].append(bqp.p10)
+                baseline_preds[name][0.50].append(bqp.p50)
+                baseline_preds[name][0.90].append(bqp.p90)
         start += step
 
     result = BacktestResult()
@@ -141,6 +191,12 @@ def walk_forward(
     pnl_series = pd.Series(pnl, index=pd.DatetimeIndex(pnl_index))
     result.pnl_curve = pnl_series.cumsum()
     result.sharpe = _sharpe(pnl_series)
+    result.baseline_pinball = {
+        name: {
+            f"p{int(q * 100)}": pinball_loss(actual_arr, np.array(qpreds[q]), q) for q in QUANTILES
+        }
+        for name, qpreds in baseline_preds.items()
+    }
     return result
 
 
@@ -244,6 +300,7 @@ def run_backtest(
         train_window=train_window,
         test_window=test_window,
         horizon=horizon,
+        returns=prices["log_return"].reindex(features.index),
     )
 
 
@@ -264,6 +321,12 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  coverage:     {result.coverage}")
     print(f"  hit_rate:     {result.directional_hit_rate}")
     print(f"  sharpe:       {result.sharpe:.3f}")
+    if result.baseline_pinball:
+        model_p50 = result.pinball_loss.get(f"{args.horizon}_p50", float("nan"))
+        print("  model vs baselines (p50 pinball):")
+        print(f"    model:    {model_p50:.6f}")
+        for name, losses in result.baseline_pinball.items():
+            print(f"    {name:<9} {losses['p50']:.6f}")
     return 0
 
 

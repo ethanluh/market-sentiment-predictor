@@ -60,6 +60,24 @@ class TestWalkForward:
         with pytest.raises(ValueError):
             walk_forward(model, X, targets, train_window=200, test_window=20)
 
+    def test_baselines_evaluated_when_returns_given(self):
+        X, targets = _features_targets()
+        returns = targets["1d"]  # a log-return-like series aligned to X.index
+        model = QuantileReturnModel(horizons=("1d",), backend="linear")
+        result = walk_forward(
+            model, X, targets, train_window=200, test_window=20, step=20, returns=returns
+        )
+        assert set(result.baseline_pinball) == {"momentum", "arima", "garch"}
+        for losses in result.baseline_pinball.values():
+            assert set(losses) == {"p10", "p50", "p90"}
+            assert all(np.isfinite(v) for v in losses.values())
+
+    def test_no_baselines_without_returns(self):
+        X, targets = _features_targets()
+        model = QuantileReturnModel(horizons=("1d",), backend="linear")
+        result = walk_forward(model, X, targets, train_window=200, test_window=20, step=20)
+        assert result.baseline_pinball == {}
+
 
 def _synthetic_prices(n: int = 300, freq: str = "D", seed: int = 0) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
