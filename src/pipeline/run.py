@@ -23,6 +23,7 @@ from functools import wraps
 from typing import TYPE_CHECKING, Callable, TypeVar
 
 from src.sentiment.aggregation import ScoredArticle
+from src.utils.safe import safe_fetch
 
 if TYPE_CHECKING:  # for type-only annotations of the lazy source fetchers
     import pandas as pd
@@ -33,7 +34,6 @@ if TYPE_CHECKING:  # for type-only annotations of the lazy source fetchers
 logger = logging.getLogger("pipeline.run")
 
 F = TypeVar("F", bound=Callable[..., object])
-T = TypeVar("T")
 
 
 def step(name: str) -> Callable[[F], F]:
@@ -78,17 +78,8 @@ class PredictionResult:
         return json.dumps(asdict(self), indent=2, default=str)
 
 
-def _safe(source: str, fn: Callable[[], T]) -> T | None:
-    """Run a supplementary source fetch, degrading to ``None`` on any failure.
-
-    Network errors / missing credentials for one source (e.g. no Reddit creds)
-    should not abort the whole ingest — only prices are essential.
-    """
-    try:
-        return fn()
-    except Exception as exc:  # noqa: BLE001 - intentional broad degrade
-        logger.warning("ingest: source %s unavailable (%s); skipping", source, exc)
-        return None
+# Graceful-degrade fetch helper (shared with the offline modeling path).
+_safe = safe_fetch
 
 
 @step("ingest")

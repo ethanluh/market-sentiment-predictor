@@ -57,6 +57,57 @@ def _features_frame() -> pd.DataFrame:
     return pd.DataFrame(rng.normal(0, 1, (3, len(FEATURE_NAMES))), columns=FEATURE_NAMES)
 
 
+def test_train_with_enrichment_sources(tmp_path, monkeypatch):
+    """--use-trends / --use-insider-flow / --use-vix fetch and feed the model."""
+    import src.ingestion.form4 as form4_mod
+    import src.ingestion.price as price_mod
+    import src.ingestion.trends as trends_mod
+
+    prices = _synthetic_prices()
+    monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)  # also serves ^VIX
+
+    calls = {"trends": 0, "form4": 0}
+
+    def _fake_trends(ticker, start=None, end=None, **k):
+        calls["trends"] += 1
+        return pd.Series(
+            np.linspace(10, 90, len(prices)), index=prices.index, name="search_interest"
+        )
+
+    def _fake_form4(ticker, after=None, limit=50):
+        calls["form4"] += 1
+        rng = np.random.default_rng(5)
+        return pd.Series(
+            rng.integers(-5000, 5000, len(prices)).astype(float),
+            index=prices.index,
+            name="insider_net_shares",
+        )
+
+    monkeypatch.setattr(trends_mod, "fetch_trends", _fake_trends)
+    monkeypatch.setattr(form4_mod, "fetch_form4", _fake_form4)
+
+    tm = _load_train_model()
+    out = tmp_path / "model.joblib"
+    tm.train(
+        "AAPL",
+        start="2022-01-01",
+        horizons=("1d",),
+        out=str(out),
+        backend="linear",
+        use_trends=True,
+        use_insider_flow=True,
+        use_vix=True,
+    )
+    assert calls == {"trends": 1, "form4": 1}
+    assert out.exists()
+
+    from src.prediction.model import QuantileReturnModel
+
+    loaded = QuantileReturnModel.load(str(out))
+    preds = loaded.predict(_features_frame())
+    assert "1d" in preds
+
+
 def test_unknown_horizon_rejected(monkeypatch):
     import src.ingestion.price as price_mod
 

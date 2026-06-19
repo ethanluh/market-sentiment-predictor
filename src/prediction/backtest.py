@@ -214,6 +214,9 @@ def run_backtest(
     trends: "pd.Series | None" = None,
     insider_flow: "pd.Series | None" = None,
     use_news_archive: bool = False,
+    use_trends: bool = False,
+    use_insider_flow: bool = False,
+    use_vix: bool = False,
     lookback_days: int = 7,
 ) -> BacktestResult:
     """
@@ -236,13 +239,36 @@ def run_backtest(
         ``search_interest_zscore`` live; otherwise it is 0.0.
       - ``insider_flow`` (a signed-insider-shares series from Form 4) makes
         ``insider_flow_npr`` live; otherwise it is 0.0.
+
+    The ``use_trends`` / ``use_insider_flow`` / ``use_vix`` flags fetch those
+    series for the backtest window themselves (degrading gracefully to a neutral
+    feature on failure); an explicitly passed series takes precedence.
     """
     from src.ingestion.price import fetch_prices  # lazy: network
     from src.prediction.baselines import horizon_to_interval, horizon_to_steps
     from src.prediction.features import build_feature_matrix
+    from src.utils.safe import safe_fetch
 
     interval = horizon_to_interval(horizon)
     prices = fetch_prices(ticker, start=start, end=end, interval=interval)
+
+    # Opt-in enrichment sources fetched over the backtest window (each degrades
+    # to a neutral feature on failure). An explicitly passed series wins.
+    if use_trends and trends is None:
+        from src.ingestion.trends import fetch_trends
+
+        trends = safe_fetch("trends", lambda: fetch_trends(ticker, start=start, end=end))
+    if use_insider_flow and insider_flow is None:
+        from src.ingestion.form4 import fetch_form4
+
+        insider_flow = safe_fetch(
+            "form4", lambda: fetch_form4(ticker, after=pd.Timestamp(start), limit=1000)
+        )
+    if use_vix and vix is None:
+        vix = safe_fetch(
+            "vix",
+            lambda: fetch_prices("^VIX", start=start, end=end, interval=interval)["close"],
+        )
 
     # Sector returns: peers (live proximity) or just the target column (inert).
     if peers:
@@ -321,10 +347,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--end", default=None)
     parser.add_argument("--horizon", default="1d")
     parser.add_argument("--backend", default="gbr", choices=["linear", "gbr"])
+    parser.add_argument("--peers", nargs="*", default=None, help="peer tickers for sector graph")
+    parser.add_argument("--use-news-archive", action="store_true", help="enable point-in-time news")
+    parser.add_argument("--lookback-days", type=int, default=7, help="news-archive lookback window")
+    parser.add_argument("--use-trends", action="store_true", help="fetch Google Trends interest")
+    parser.add_argument(
+        "--use-insider-flow", action="store_true", help="fetch Form 4 insider trades"
+    )
+    parser.add_argument("--use-vix", action="store_true", help="fetch ^VIX for the regime label")
     args = parser.parse_args(argv)
 
     result = run_backtest(
-        args.ticker, args.start, args.end, horizon=args.horizon, backend=args.backend
+        args.ticker,
+        args.start,
+        args.end,
+        horizon=args.horizon,
+        backend=args.backend,
+        peers=args.peers,
+        use_news_archive=args.use_news_archive,
+        lookback_days=args.lookback_days,
+        use_trends=args.use_trends,
+        use_insider_flow=args.use_insider_flow,
+        use_vix=args.use_vix,
     )
     print(f"Backtest {args.ticker} [{args.horizon}] — n={result.n_predictions}")
     print(f"  pinball_loss: {result.pinball_loss}")

@@ -193,6 +193,38 @@ class TestMainCLI:
         assert "model vs baselines" in out
         assert "momentum" in out
 
+    def test_main_threads_source_flags(self, monkeypatch):
+        import src.prediction.backtest as bt
+
+        captured = {}
+
+        def _capture(*a, **k):
+            captured.update(k)
+            return self._result(False)
+
+        monkeypatch.setattr(bt, "run_backtest", _capture)
+        rc = main(
+            [
+                "--ticker",
+                "AAPL",
+                "--start",
+                "2024-01-01",
+                "--peers",
+                "MSFT",
+                "GOOG",
+                "--use-trends",
+                "--use-insider-flow",
+                "--use-vix",
+                "--use-news-archive",
+            ]
+        )
+        assert rc == 0
+        assert captured["peers"] == ["MSFT", "GOOG"]
+        assert captured["use_trends"] is True
+        assert captured["use_insider_flow"] is True
+        assert captured["use_vix"] is True
+        assert captured["use_news_archive"] is True
+
 
 def _synthetic_prices(n: int = 300, freq: str = "D", seed: int = 0) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
@@ -342,5 +374,98 @@ class TestRunBacktestInterval:
             train_window=200,
             test_window=20,
             insider_flow=insider_flow,
+        )
+        assert result.n_predictions > 0
+
+    def test_use_trends_flag_fetches_series(self, monkeypatch):
+        import src.ingestion.price as price_mod
+        import src.ingestion.trends as trends_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+        calls = {"n": 0}
+
+        def _fake_trends(ticker, start=None, end=None, **k):
+            calls["n"] += 1
+            return pd.Series(
+                np.linspace(10, 90, len(prices)), index=prices.index, name="search_interest"
+            )
+
+        monkeypatch.setattr(trends_mod, "fetch_trends", _fake_trends)
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            use_trends=True,
+        )
+        assert calls["n"] == 1
+        assert result.n_predictions > 0
+
+    def test_use_insider_flow_flag_fetches_series(self, monkeypatch):
+        import src.ingestion.form4 as form4_mod
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+        calls = {"n": 0}
+
+        def _fake_form4(ticker, after=None, limit=50):
+            calls["n"] += 1
+            rng = np.random.default_rng(4)
+            return pd.Series(
+                rng.integers(-5000, 5000, len(prices)).astype(float),
+                index=prices.index,
+                name="insider_net_shares",
+            )
+
+        monkeypatch.setattr(form4_mod, "fetch_form4", _fake_form4)
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            use_insider_flow=True,
+        )
+        assert calls["n"] == 1
+        assert result.n_predictions > 0
+
+    def test_use_vix_flag_fetches_vix_via_prices(self, monkeypatch):
+        # use_vix re-uses fetch_prices("^VIX"); the patched fetch_prices serves it.
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            use_vix=True,
+        )
+        assert result.n_predictions > 0
+
+    def test_failed_source_fetch_degrades(self, monkeypatch):
+        # A raising trends fetch must neutralize only that feature, not abort.
+        import src.ingestion.price as price_mod
+        import src.ingestion.trends as trends_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+
+        def _boom(*a, **k):
+            raise RuntimeError("rate limited")
+
+        monkeypatch.setattr(trends_mod, "fetch_trends", _boom)
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            use_trends=True,
         )
         assert result.n_predictions > 0
