@@ -58,7 +58,13 @@ def fetch_prices(
         auto_adjust=True,
     )
     if raw is None or raw.empty:
-        raise ValueError(f"No price data returned for {ticker!r}")
+        hint = ""
+        if interval not in ("1d", "1wk", "1mo"):
+            hint = (
+                f" (intraday interval {interval!r} is limited to a short lookback by "
+                "Yahoo Finance — try a more recent start date)"
+            )
+        raise ValueError(f"No price data returned for {ticker!r}{hint}")
 
     # yfinance may return MultiIndex columns when multiple tickers are passed;
     # flatten to the single-ticker case.

@@ -30,20 +30,29 @@ from src.prediction.model import QuantilePrediction
 _Z = {0.10: -1.2815515594600314, 0.50: 0.0, 0.90: 1.2815515594600314}
 _EPS = 1e-9
 
+# Single source of truth mapping each horizon label to the price-bar interval it
+# is measured on (a yfinance interval string) and the number of forward bars.
+# "1h" is measured on hourly bars (1 bar ahead); "1d"/"5d" on daily bars. This
+# is what makes "1h" a genuine intraday horizon rather than a duplicate of "1d".
+HORIZON_SPECS: dict[str, tuple[str, int]] = {
+    "1h": ("1h", 1),
+    "1d": ("1d", 1),
+    "5d": ("1d", 5),
+}
+
 
 def horizon_to_steps(horizon: str) -> int:
-    """
-    Map a horizon label to a number of forward bars (best-effort).
-
-    Steps are counted in *bars*, so the mapping depends on the price frame's
-    interval. ``"1h"`` is only meaningful on an intraday frame; on the default
-    daily bars it resolves to one step — identical to ``"1d"`` — so callers
-    backtesting daily data should either supply intraday bars or drop ``"1h"``.
-    """
-    mapping = {"1h": 1, "1d": 1, "5d": 5}
-    if horizon not in mapping:
+    """Return the number of forward bars for ``horizon`` (see ``HORIZON_SPECS``)."""
+    if horizon not in HORIZON_SPECS:
         raise ValueError(f"Unknown horizon {horizon!r}")
-    return mapping[horizon]
+    return HORIZON_SPECS[horizon][1]
+
+
+def horizon_to_interval(horizon: str) -> str:
+    """Return the price-bar interval (yfinance string) ``horizon`` is measured on."""
+    if horizon not in HORIZON_SPECS:
+        raise ValueError(f"Unknown horizon {horizon!r}")
+    return HORIZON_SPECS[horizon][0]
 
 
 @runtime_checkable
