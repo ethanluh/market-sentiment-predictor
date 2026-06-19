@@ -44,6 +44,14 @@ def _make_sector_returns(n: int = 120, seed: int = 1) -> pd.DataFrame:
     )
 
 
+def _make_trends(
+    n: int = 60, seed: int = 2, freq: str = "D", start: str = "2023-01-01"
+) -> pd.Series:
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range(start, periods=n, freq=freq, tz="UTC")
+    return pd.Series(rng.integers(0, 100, n).astype(float), index=idx, name="search_interest")
+
+
 def _articles(as_of: datetime) -> list[ScoredArticle]:
     return [
         ScoredArticle(0.6, NODE_SEC_CORP, as_of - timedelta(hours=2)),
@@ -138,6 +146,70 @@ class TestFeatureVector:
         )
         after = build_feature_vector("AAPL", as_of, [], prices, future).sector_proximity
         assert before == after
+
+
+class TestSearchInterest:
+    def test_inert_zero_when_no_trends(self):
+        # The regression guard for the FEATURE_NAMES .dropna() edge case: with no
+        # trends series the feature must be 0.0 (neutral), NOT NaN, so the row survives.
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector)  # trends=None default
+        assert fv.search_interest_zscore == 0.0
+
+    def test_computed_when_trends_supplied(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector, trends=_make_trends(n=120))
+        assert np.isfinite(fv.search_interest_zscore)
+
+    def test_nan_on_insufficient_history(self):
+        # Fewer than the 20-point window before as_of -> NaN (row drops downstream,
+        # exactly like volume_zscore on short history).
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector, trends=_make_trends(n=5))
+        assert np.isnan(fv.search_interest_zscore)
+
+    def test_no_lookahead(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        trends = _make_trends(n=90)
+        before = build_feature_vector(
+            "AAPL", as_of, [], prices, sector, trends=trends
+        ).search_interest_zscore
+        # A spiking future block (all after as_of) must not change the value at as_of.
+        future_idx = pd.date_range(
+            trends.index[-1] + pd.Timedelta(days=1), periods=10, freq="D", tz="UTC"
+        )
+        future = pd.concat([trends, pd.Series([999.0] * 10, index=future_idx)])
+        after = build_feature_vector(
+            "AAPL", as_of, [], prices, sector, trends=future
+        ).search_interest_zscore
+        assert before == after
+
+    def test_finite_on_weekly_grid(self):
+        # Daily as_of slicing a weekly-granularity trends index must not crash and
+        # yields a finite z-score (no exact-index-membership dependency).
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        trends = _make_trends(n=60, freq="W", start="2022-06-01")
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector, trends=trends)
+        assert np.isfinite(fv.search_interest_zscore)
+
+    def test_tz_mismatch_degrades_to_zero(self):
+        from src.prediction.features import _search_interest_zscore
+
+        naive = pd.Series(
+            [1.0] * 30, index=pd.date_range("2023-01-01", periods=30, freq="D")  # tz-naive
+        )
+        as_of = pd.Timestamp("2023-02-01", tz="UTC")
+        assert _search_interest_zscore(naive, as_of) == 0.0
 
 
 class TestVixAsof:

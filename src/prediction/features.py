@@ -67,6 +67,7 @@ FEATURE_NAMES: list[str] = [
     "momentum_20d",
     "realized_vol_20d",
     "volume_zscore",
+    "search_interest_zscore",
     "return_lag_1",
     "regime_label",
 ]
@@ -88,6 +89,7 @@ class FeatureVector:
     momentum_20d: float
     realized_vol_20d: float
     volume_zscore: float
+    search_interest_zscore: float
     return_lag_1: float
 
     # regime
@@ -209,6 +211,34 @@ def _vix_asof(vix: pd.Series, as_of: "pd.Timestamp") -> float | None:
     return float(value)
 
 
+def _search_interest_zscore(
+    trends: pd.Series | None,
+    as_of: "pd.Timestamp | datetime",
+    window: int = 20,
+) -> float:
+    """
+    Point-in-time search-interest z-score over the trailing ``window`` points
+    at/before ``as_of``.
+
+    Returns ``0.0`` (neutral) when no series is supplied, so the feature is
+    inert without dropping the row downstream. Returns ``NaN`` when a series is
+    supplied but the window is not yet satisfied — mirroring ``volume_zscore``
+    on insufficient history, so that early row drops. The formula matches
+    ``volume_zscore``: ``(last - mean) / std(ddof=0)`` over the trailing window.
+    """
+    if trends is None:
+        return 0.0
+    try:
+        hist = trends[trends.index <= as_of].dropna()
+    except TypeError:  # tz / index incompatibility -> neutral, don't crash
+        return 0.0
+    if len(hist) < window:
+        return float("nan")
+    tail = hist.tail(window)
+    std = tail.std(ddof=0)
+    return float((tail.iloc[-1] - tail.mean()) / std) if std > 0 else 0.0
+
+
 def build_feature_vector(
     ticker: str,
     as_of: datetime,
@@ -219,6 +249,7 @@ def build_feature_vector(
     origin_node: str | None = None,
     regime_classifier: "RegimeClassifier | None" = None,
     vix_value: float | None = None,
+    trends: pd.Series | None = None,
     alpha: float = 0.5,
     sector_window: int = 60,
     min_corr: float = 0.5,
@@ -247,6 +278,7 @@ def build_feature_vector(
 
     tech = compute_technical_features(prices, as_of)
     regime = _regime_label(regime_classifier, vix_value)
+    search_z = _search_interest_zscore(trends, as_of)
 
     return FeatureVector(
         ticker=ticker,
@@ -259,6 +291,7 @@ def build_feature_vector(
         momentum_20d=tech["momentum_20d"],
         realized_vol_20d=tech["realized_vol_20d"],
         volume_zscore=tech["volume_zscore"],
+        search_interest_zscore=search_z,
         return_lag_1=tech["return_lag_1"],
         regime_label=regime,
     )
@@ -273,6 +306,7 @@ def build_feature_matrix(
     *,
     vix: pd.Series | None = None,
     regime_classifier: "RegimeClassifier | None" = None,
+    trends: pd.Series | None = None,
     **kwargs: object,
 ) -> pd.DataFrame:
     """
@@ -284,6 +318,7 @@ def build_feature_matrix(
     drop or impute them.
     """
     vix_sorted = vix.sort_index() if vix is not None else None
+    trends_sorted = trends.sort_index() if trends is not None else None
     vix_hits = 0
 
     rows: list[pd.Series] = []
@@ -300,6 +335,7 @@ def build_feature_matrix(
             sector_returns,
             regime_classifier=regime_classifier,
             vix_value=vix_value,
+            trends=trends_sorted,
             **kwargs,  # type: ignore[arg-type]
         )
         rows.append(fv.to_series())

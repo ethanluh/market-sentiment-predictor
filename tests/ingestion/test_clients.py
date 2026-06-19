@@ -164,3 +164,111 @@ class TestFilingsClient:
         assert len(filings) == 1
         # The single returned filing is the most recent parseable one.
         assert filings[0].filed_at == datetime(2023, 3, 15, 14, 0, tzinfo=timezone.utc)
+
+
+# --------------------------------------------------------------------------- #
+# trends.fetch_trends (Google Trends via pytrends)
+# --------------------------------------------------------------------------- #
+def _install_pytrends(monkeypatch, frame=None, raise_on_call=False, captured=None):
+    """Inject a fake ``pytrends.request.TrendReq`` (no network / real dep)."""
+
+    class _FakeTrendReq:
+        def __init__(self, *a, **k):
+            pass
+
+        def build_payload(self, kw_list, timeframe=None, geo="", **k):
+            if captured is not None:
+                captured["kw_list"] = kw_list
+                captured["timeframe"] = timeframe
+                captured["geo"] = geo
+
+        def interest_over_time(self):
+            if raise_on_call:
+                raise RuntimeError("rate limited")
+            return frame
+
+    pkg = types.ModuleType("pytrends")
+    req_mod = types.ModuleType("pytrends.request")
+    req_mod.TrendReq = _FakeTrendReq
+    monkeypatch.setitem(sys.modules, "pytrends", pkg)
+    monkeypatch.setitem(sys.modules, "pytrends.request", req_mod)
+
+
+def _trends_frame(term="AAPL", n=30, partial_tail=1):
+    idx = pd.date_range("2024-01-01", periods=n, freq="D")  # tz-naive on purpose
+    is_partial = [False] * (n - partial_tail) + [True] * partial_tail
+    return pd.DataFrame({term: [i % 100 for i in range(n)], "isPartial": is_partial}, index=idx)
+
+
+class TestTrendsClient:
+    def test_parses_0_100_series_and_drops_ispartial(self, monkeypatch):
+        _install_pytrends(monkeypatch, frame=_trends_frame())
+        from src.ingestion.trends import fetch_trends
+
+        s = fetch_trends("AAPL")
+        assert isinstance(s, pd.Series)
+        assert s.name == "search_interest"
+        assert s.dtype == float
+        assert s.between(0, 100).all()
+        assert len(s) == 30
+        # UTC-aware index even though the source frame was tz-naive.
+        assert s.index.tz is not None
+
+    def test_timeframe_derived_from_start_end(self, monkeypatch):
+        captured: dict = {}
+        _install_pytrends(monkeypatch, frame=_trends_frame(), captured=captured)
+        from src.ingestion.trends import fetch_trends
+
+        fetch_trends("AAPL", start="2024-01-01", end="2024-06-01", geo="US")
+        assert captured["timeframe"] == "2024-01-01 2024-06-01"
+        assert captured["kw_list"] == ["AAPL"]
+        assert captured["geo"] == "US"
+
+    def test_explicit_timeframe_overrides_dates(self, monkeypatch):
+        captured: dict = {}
+        _install_pytrends(monkeypatch, frame=_trends_frame(), captured=captured)
+        from src.ingestion.trends import fetch_trends
+
+        fetch_trends("AAPL", start="2024-01-01", end="2024-06-01", timeframe="today 5-y")
+        assert captured["timeframe"] == "today 5-y"
+
+    def test_keyword_overrides_ticker(self, monkeypatch):
+        captured: dict = {}
+        _install_pytrends(monkeypatch, frame=_trends_frame(term="Apple stock"), captured=captured)
+        from src.ingestion.trends import fetch_trends
+
+        s = fetch_trends("AAPL", keyword="Apple stock")
+        assert captured["kw_list"] == ["Apple stock"]
+        assert s.name == "search_interest"
+
+    def test_empty_response_raises(self, monkeypatch):
+        _install_pytrends(monkeypatch, frame=pd.DataFrame())
+        from src.ingestion.trends import fetch_trends
+
+        with pytest.raises(ValueError, match="No Google Trends data"):
+            fetch_trends("AAPL")
+
+    def test_missing_term_column_raises(self, monkeypatch):
+        # A frame that lacks the queried term column is treated as no data.
+        _install_pytrends(monkeypatch, frame=_trends_frame(term="MSFT"))
+        from src.ingestion.trends import fetch_trends
+
+        with pytest.raises(ValueError, match="No Google Trends data"):
+            fetch_trends("AAPL")
+
+    def test_interest_call_failure_raises_valueerror(self, monkeypatch):
+        _install_pytrends(monkeypatch, raise_on_call=True)
+        from src.ingestion.trends import fetch_trends
+
+        with pytest.raises(ValueError, match="No Google Trends data"):
+            fetch_trends("AAPL")
+
+    def test_missing_dependency_raises_runtimeerror(self, monkeypatch):
+        # pytrends is not installed in CI; ensure no fake lingers, then assert the
+        # informative error fires from the lazy import.
+        monkeypatch.delitem(sys.modules, "pytrends", raising=False)
+        monkeypatch.delitem(sys.modules, "pytrends.request", raising=False)
+        from src.ingestion.trends import fetch_trends
+
+        with pytest.raises(RuntimeError, match="pytrends is required"):
+            fetch_trends("AAPL")
