@@ -116,6 +116,39 @@ class TestNews:
             fetch_news("AAPL")
 
 
+class TestFilings:
+    def test_parse_acceptance_datetime(self, tmp_path):
+        from src.ingestion.filings import _parse_filing_date
+
+        entry = tmp_path / "0000320193-23-000006"
+        entry.mkdir()
+        (entry / "full-submission.txt").write_text(
+            "<SEC-DOCUMENT>...\n<ACCEPTANCE-DATETIME>20230115083000\n"
+            "FILED AS OF DATE:\t\t20230115\n"
+        )
+        dt = _parse_filing_date(entry)
+        assert dt is not None
+        assert (dt.year, dt.month, dt.day, dt.hour) == (2023, 1, 15, 8)
+        assert dt.tzinfo is not None
+
+    def test_parse_filed_as_of_date_fallback(self, tmp_path):
+        from src.ingestion.filings import _parse_filing_date
+
+        entry = tmp_path / "acc"
+        entry.mkdir()
+        (entry / "full-submission.txt").write_text("FILED AS OF DATE:    20221231\n")
+        dt = _parse_filing_date(entry)
+        assert dt is not None
+        assert (dt.year, dt.month, dt.day) == (2022, 12, 31)
+
+    def test_parse_returns_none_when_absent(self, tmp_path):
+        from src.ingestion.filings import _parse_filing_date
+
+        entry = tmp_path / "empty"
+        entry.mkdir()
+        assert _parse_filing_date(entry) is None
+
+
 class TestSocial:
     def test_subreddit_category(self):
         assert subreddit_category("investing") == NODE_INFORMED_RETAIL

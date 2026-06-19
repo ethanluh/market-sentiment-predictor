@@ -32,7 +32,14 @@ _EPS = 1e-9
 
 
 def horizon_to_steps(horizon: str) -> int:
-    """Map a horizon label to a number of forward bars (best-effort)."""
+    """
+    Map a horizon label to a number of forward bars (best-effort).
+
+    Steps are counted in *bars*, so the mapping depends on the price frame's
+    interval. ``"1h"`` is only meaningful on an intraday frame; on the default
+    daily bars it resolves to one step — identical to ``"1d"`` — so callers
+    backtesting daily data should either supply intraday bars or drop ``"1h"``.
+    """
     mapping = {"1h": 1, "1d": 1, "5d": 5}
     if horizon not in mapping:
         raise ValueError(f"Unknown horizon {horizon!r}")

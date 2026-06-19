@@ -116,3 +116,23 @@ class TestFeatureVector:
         as_of = prices.index[80].to_pydatetime()
         fv = build_feature_vector("AAPL", as_of, [], prices, sector)
         assert fv.regime_label == -1
+
+    def test_sector_proximity_no_lookahead(self):
+        # Build a sector frame and compute proximity at an early as_of; appending
+        # future rows must not change the proximity computed at that as_of.
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = sector.index[70].to_pydatetime()
+        before = build_feature_vector("AAPL", as_of, [], prices, sector).sector_proximity
+
+        future = sector.copy()
+        extra_idx = pd.date_range(
+            future.index[-1] + pd.Timedelta(days=1), periods=30, freq="D", tz="UTC"
+        )
+        # Strongly correlated future block that would shift correlations if leaked.
+        common = np.linspace(0.0, 0.05, len(extra_idx))
+        future = pd.concat(
+            [future, pd.DataFrame({c: common for c in future.columns}, index=extra_idx)]
+        )
+        after = build_feature_vector("AAPL", as_of, [], prices, future).sector_proximity
+        assert before == after

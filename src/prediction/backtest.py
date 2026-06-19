@@ -18,6 +18,7 @@ Metric functions are pure (synthetic-frame testable). ``run_backtest`` /
 from __future__ import annotations
 
 import argparse
+import logging
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -25,6 +26,8 @@ import pandas as pd
 
 from src.prediction.features import FEATURE_NAMES
 from src.prediction.model import QUANTILES, QuantileReturnModel
+
+logger = logging.getLogger("prediction.backtest")
 
 
 def pinball_loss(y_true: np.ndarray, y_pred: np.ndarray, quantile: float) -> float:
@@ -158,10 +161,22 @@ def run_backtest(
     historical window (``articles_by_time`` returns no articles). To backtest
     the full sentiment-driven feature set, pass a precomputed feature matrix
     directly to :func:`walk_forward`.
+
+    NOTE: in this path three of the nine features are inert (``sentiment_agg``
+    and ``estimated_lag_hours`` are constant with no articles, ``sector_proximity``
+    is 0.0 with a single-ticker frame, and ``regime_label`` is -1 with no VIX
+    classifier), so the result benchmarks the technical features only.
     """
     from src.ingestion.price import fetch_prices  # lazy: network
     from src.prediction.baselines import horizon_to_steps
     from src.prediction.features import build_feature_matrix
+
+    logger.warning(
+        "run_backtest: sentiment_agg, estimated_lag_hours, sector_proximity and "
+        "regime_label are neutralized in this real-data path; results reflect the "
+        "technical features only. Use walk_forward with a precomputed feature "
+        "matrix to evaluate the full pipeline."
+    )
 
     prices = fetch_prices(ticker, start=start, end=end)
     sector_returns = prices[["log_return"]].rename(columns={"log_return": ticker})

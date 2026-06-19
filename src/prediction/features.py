@@ -216,7 +216,10 @@ def build_feature_vector(
     lag = estimate_lag(origin, alpha=alpha)
 
     if sector_returns is not None and not sector_returns.empty:
-        graph = build_sector_graph(sector_returns, window=sector_window, min_corr=min_corr)
+        # Point-in-time: only use correlations observable at/ before as_of so the
+        # sector graph never leaks future returns into a historical feature row.
+        hist = sector_returns[sector_returns.index <= as_of]
+        graph = build_sector_graph(hist, window=sector_window, min_corr=min_corr)
         proximity = sector_proximity(graph, ticker)
     else:
         proximity = 0.0

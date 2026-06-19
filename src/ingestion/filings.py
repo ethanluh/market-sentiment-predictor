@@ -8,6 +8,7 @@ origin and are categorised as ``sec_corp`` nodes in the diffusion graph.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,10 @@ EDGAR_DOWNLOAD_ROOT = Path(__file__).resolve().parents[2] / "data" / "raw" / "ed
 
 # SEC requires a descriptive User-Agent (company / email).
 _DEFAULT_UA_NAME = "market-sentiment-predictor"
+
+# EDGAR SGML header markers carrying the true filing timestamp.
+_ACCEPTANCE_RE = re.compile(r"<ACCEPTANCE-DATETIME>(\d{14})")
+_FILED_DATE_RE = re.compile(r"FILED AS OF DATE:\s*(\d{8})")
 
 
 @dataclass
@@ -32,6 +37,30 @@ class Filing:
 
 def _utc(dt: datetime) -> datetime:
     return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
+
+
+def _parse_filing_date(entry: Path) -> datetime | None:
+    """
+    Parse the true filing timestamp from an accession folder's EDGAR submission
+    header (``<ACCEPTANCE-DATETIME>`` then ``FILED AS OF DATE:``). Returns
+    ``None`` if no submission file/header is found.
+    """
+    candidates = ["full-submission.txt", "primary-document.html", "filing-details.html"]
+    for name in candidates:
+        path = entry / name
+        if not path.exists():
+            continue
+        try:
+            header = path.read_text(encoding="utf-8", errors="ignore")[:8192]
+        except OSError:
+            continue
+        m = _ACCEPTANCE_RE.search(header)
+        if m:
+            return datetime.strptime(m.group(1), "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        m = _FILED_DATE_RE.search(header)
+        if m:
+            return datetime.strptime(m.group(1), "%Y%m%d").replace(tzinfo=timezone.utc)
+    return None
 
 
 def fetch_filings(
@@ -59,10 +88,14 @@ def fetch_filings(
     base = EDGAR_DOWNLOAD_ROOT / "sec-edgar-filings" / ticker.upper() / form
     filings: list[Filing] = []
     if base.exists():
-        for entry in sorted(base.iterdir(), reverse=True)[:limit]:
+        for entry in base.iterdir():
             if not entry.is_dir():
                 continue
-            filed_at = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
+            # Prefer the real EDGAR filing date; fall back to the download mtime
+            # only when the submission header is unavailable.
+            filed_at = _parse_filing_date(entry) or datetime.fromtimestamp(
+                entry.stat().st_mtime, tz=timezone.utc
+            )
             filings.append(
                 Filing(
                     ticker=ticker.upper(),
@@ -71,4 +104,6 @@ def fetch_filings(
                     path=str(entry),
                 )
             )
-    return filings
+    # Sort by actual filing date (newest first) rather than accession-number string.
+    filings.sort(key=lambda f: f.filed_at, reverse=True)
+    return filings[:limit]
