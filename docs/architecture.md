@@ -94,13 +94,18 @@ scripts/
 
 ## Storage
 
-| Layer                            | Store                | Notes                                       |
-|---                               |---                   |---                                          |
-| Raw price/news                   | TimescaleDB          | Hypertable on timestamp                     |
-| Embeddings                       | Postgres (pgvector)  | Optional; for similarity clustering         |
-| Graph metadata                   | SQLite               | Node weights, edge lag distributions        |
-| Experiments                      | MLflow               | All model runs tracked                      |
-| API cache                        | Local JSON files     | Gitignored; keyed by (source, ticker, date) |
+The lightweight build is **file-based** today; the database/experiment-tracking
+rows are planned, not yet implemented.
+
+| Layer                  | Store (current)                          | Status |
+|---                     |---                                       |---     |
+| API responses          | Local JSON cache (`data/cache/`)         | ✅ implemented |
+| Point-in-time news     | Per-day JSON (`data/raw/news/<TICKER>/`) | ✅ implemented |
+| News sentiment scores  | JSON (`data/processed/news_scores/`)     | ✅ implemented |
+| Model artifacts        | `joblib` files (`models/`)               | ✅ implemented |
+| Raw price/news at scale | TimescaleDB hypertable                  | 🔜 planned |
+| Embeddings             | Postgres (pgvector)                      | 🔜 planned |
+| Experiments            | MLflow                                   | 🔜 planned |
 
 ## Serving
 
