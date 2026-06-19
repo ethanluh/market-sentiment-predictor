@@ -59,9 +59,22 @@ Recomputed weekly. Stored in SQLite.
 
 ## Calibration
 
-To update edge lag distributions from data:
+To update edge transmission probabilities and lag distributions from data:
 1. Identify events with a known `sec_corp` origination (8-K filing timestamps)
 2. Measure time-to-first-reaction for each downstream category (first article, options flow spike, Reddit mention)
-3. Fit log-normal MLE per edge; update `EDGES` in `categories.py`
+3. Per edge, estimate `prob` (fraction of events where the downstream node reacted) and fit a log-normal MLE for the lag
 
-Script: `scripts/calibrate_graph.py`
+Script: `scripts/calibrate_graph.py` → writes `data/processed/calibrated_edges.json`.
+
+Feed it back into the model (the diffusion adjacency keys off `prob`):
+
+```python
+from src.graph.categories import load_calibrated_edges
+from src.graph.diffusion import estimate_lag
+
+edges = load_calibrated_edges("data/processed/calibrated_edges.json")
+lag = estimate_lag("sec_corp", edges=edges)   # uses calibrated probabilities
+```
+
+`load_calibrated_edges` overrides the `DEFAULT_EDGES` priors where the file has
+data and keeps defaults otherwise, so the topology is preserved.
