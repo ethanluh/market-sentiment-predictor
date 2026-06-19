@@ -46,14 +46,20 @@ pip install -r requirements-dev.txt
 cp .env.example .env
 # Fill in API keys (NEWS_API_KEY, REDDIT_*, SEC_EDGAR_EMAIL, ...)
 
-# Train a model artifact (price/technical features; --peers activates sector_proximity)
-python scripts/train_model.py --ticker AAPL --start 2022-01-01 --out models/aapl.joblib
+# Train a model artifact. Enrichment features are opt-in flags (each degrades
+# gracefully if its source is unavailable):
+#   --peers <tickers>   sector_proximity      --use-vix            regime_label (^VIX)
+#   --use-trends        search_interest_zscore  --use-insider-flow insider_flow_npr (Form 4)
+#   --use-news-archive  sentiment_agg / estimated_lag_hours (needs build_news_archive)
+python scripts/train_model.py --ticker AAPL --start 2022-01-01 --out models/aapl.joblib \
+    --peers MSFT GOOG --use-trends --use-insider-flow --use-vix
 
 # Run the pipeline for a single ticker (multi-source ingest -> quantile prediction)
 python -m src.pipeline.run --ticker AAPL --horizon 1d --model-path models/aapl.joblib
 
-# Backtest (prints model-vs-baseline pinball losses)
-python -m src.prediction.backtest --ticker AAPL --start 2023-01-01 --end 2024-01-01
+# Backtest (prints model-vs-baseline pinball losses); same enrichment flags apply
+python -m src.prediction.backtest --ticker AAPL --start 2023-01-01 --end 2024-01-01 \
+    --use-trends --use-insider-flow --use-vix
 
 # Serve the prediction API
 python -m src.pipeline.api          # POST /predict, GET /health on :8000

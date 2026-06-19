@@ -43,17 +43,31 @@ def train(
     out: str = "models/model.joblib",
     peers: list[str] | None = None,
     backend: str = "gbr",
+    use_news_archive: bool = False,
+    lookback_days: int = 7,
+    use_trends: bool = False,
+    use_insider_flow: bool = False,
+    use_vix: bool = False,
 ):  # type: ignore[no-untyped-def]
     """Fetch prices, build features+targets, fit a model, and save it.
 
     ``interval`` is the bar size to fetch and train on. Forward-return targets
     are built per horizon via ``horizon_to_steps`` (which raises on an unknown
     horizon). All requested horizons are trained on the same ``interval`` frame.
+
+    The opt-in flags activate enrichment features over the training window,
+    each degrading gracefully to a neutral feature on failure:
+    ``use_news_archive`` (sentiment_agg / estimated_lag_hours), ``peers``
+    (sector_proximity), ``use_vix`` (regime_label via ^VIX), ``use_trends``
+    (search_interest_zscore), ``use_insider_flow`` (insider_flow_npr).
     """
+    import pandas as pd
+
     from src.ingestion.price import fetch_prices, fetch_returns_matrix
     from src.prediction.baselines import horizon_to_steps
     from src.prediction.features import build_feature_matrix
     from src.prediction.model import QuantileReturnModel
+    from src.utils.safe import safe_fetch
 
     # Validate horizons up front (raises ValueError on an unknown label).
     for h in horizons:
@@ -65,19 +79,71 @@ def train(
             [ticker, *peers], start=start, end=end, interval=interval
         )
     else:
-        logger.warning(
-            "train_model: no --peers and no news archive, so sentiment_agg, "
-            "estimated_lag_hours, sector_proximity and regime_label are neutral; "
-            "the model learns from technical features only."
-        )
         sector_returns = prices[["log_return"]].rename(columns={"log_return": ticker})
+
+    # Point-in-time news reader (live sentiment) when requested.
+    if use_news_archive:
+        from src.ingestion.news_archive import make_archive_reader
+
+        articles_by_time = make_archive_reader(ticker, lookback_days=lookback_days)
+    else:
+        articles_by_time = lambda _as_of: []  # noqa: E731 - tiny inline provider
+
+    # Opt-in enrichment sources fetched over the training window (each degrades
+    # to a neutral feature on failure).
+    trends = None
+    if use_trends:
+        from src.ingestion.trends import fetch_trends
+
+        trends = safe_fetch("trends", lambda: fetch_trends(ticker, start=start, end=end))
+    insider_flow = None
+    if use_insider_flow:
+        from src.ingestion.form4 import fetch_form4
+
+        insider_flow = safe_fetch(
+            "form4", lambda: fetch_form4(ticker, after=pd.Timestamp(start), limit=1000)
+        )
+    vix = None
+    regime_classifier = None
+    if use_vix:
+        vix = safe_fetch(
+            "vix",
+            lambda: fetch_prices("^VIX", start=start, end=end, interval=interval)["close"],
+        )
+    if vix is not None:
+        from src.prediction.regime import RegimeClassifier
+
+        regime_classifier = RegimeClassifier().fit(vix.to_numpy())
+
+    inert = [
+        name
+        for name, active in [
+            ("sentiment_agg/estimated_lag_hours", use_news_archive),
+            ("sector_proximity", bool(peers)),
+            ("regime_label", vix is not None),
+            ("search_interest_zscore", trends is not None),
+            ("insider_flow_npr", insider_flow is not None),
+        ]
+        if not active
+    ]
+    if inert:
+        logger.warning(
+            "train_model: the following features are neutral in this run: %s. "
+            "Enable --peers / --use-news-archive / --use-vix / --use-trends / "
+            "--use-insider-flow to activate them.",
+            ", ".join(inert),
+        )
 
     features = build_feature_matrix(
         ticker,
         prices.index,
-        articles_by_time=lambda _as_of: [],
+        articles_by_time=articles_by_time,
         prices=prices,
         sector_returns=sector_returns,
+        vix=vix,
+        regime_classifier=regime_classifier,
+        trends=trends,
+        insider_flow=insider_flow,
     ).dropna()
 
     targets = {
@@ -106,6 +172,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--peers", nargs="*", default=None)
     parser.add_argument("--backend", default="gbr", choices=["linear", "gbr"])
     parser.add_argument("--out", default="models/model.joblib")
+    parser.add_argument("--use-news-archive", action="store_true", help="enable point-in-time news")
+    parser.add_argument("--lookback-days", type=int, default=7, help="news-archive lookback window")
+    parser.add_argument("--use-trends", action="store_true", help="fetch Google Trends interest")
+    parser.add_argument(
+        "--use-insider-flow", action="store_true", help="fetch Form 4 insider trades"
+    )
+    parser.add_argument("--use-vix", action="store_true", help="fetch ^VIX for the regime label")
     args = parser.parse_args(argv)
 
     train(
@@ -117,6 +190,11 @@ def main(argv: list[str] | None = None) -> int:
         out=args.out,
         peers=args.peers,
         backend=args.backend,
+        use_news_archive=args.use_news_archive,
+        lookback_days=args.lookback_days,
+        use_trends=args.use_trends,
+        use_insider_flow=args.use_insider_flow,
+        use_vix=args.use_vix,
     )
     return 0
 
