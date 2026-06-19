@@ -99,7 +99,7 @@ src/
   prediction/     # features, regime, quantile model, baselines, walk-forward backtest
   pipeline/       # in-process orchestration flow (run) + FastAPI app (api)
   utils/          # shared datetime helpers
-docs/             # architecture, graph model, data sources, deploy
+docs/             # architecture, graph model, data sources, deploy, testing the thesis
 tests/            # mirrors src/
 scripts/          # train_model, build_news_archive, calibrate_graph
 data/
