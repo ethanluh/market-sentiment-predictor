@@ -59,10 +59,12 @@
 ```
 External APIs
   └── src/ingestion/
-        ├── price.py       → OHLCV, VWAP (yfinance / Polygon)
-        ├── news.py        → articles with source metadata (NewsAPI, Benzinga)
-        ├── filings.py     → SEC 8-K, 10-Q (sec-edgar-downloader)
-        └── social.py      → Reddit praw, Google Trends proxy
+        ├── price.py        → OHLCV → UTC log-returns (yfinance)
+        ├── news.py         → articles + source→category mapping (NewsAPI)
+        ├── filings.py      → SEC 8-K, 10-Q + real filing dates (sec-edgar-downloader)
+        ├── social.py       → Reddit posts (praw)
+        ├── news_archive.py → point-in-time per-day news store + leakage-safe reader
+        └── cache.py        → JSON API cache
 
 src/sentiment/
   ├── inference.py         → FinBERT forward pass, returns float score in [-1,1]
@@ -74,14 +76,20 @@ src/graph/
   └── sector.py            → rolling Pearson correlation graph over sector tickers
 
 src/prediction/
-  ├── features.py          → assemble feature vector per (ticker, event)
-  ├── regime.py            → VIX k-means regime classifier
-  ├── model.py             → QuantileRegressor wrappers for P10/P50/P90
-  ├── baselines.py         → momentum, ARIMA, GARCH
-  └── backtest.py          → vectorbt backtest harness
+  ├── features.py          → assemble feature vector per (ticker, as_of); no look-ahead
+  ├── regime.py            → VIX k-means regime classifier (vol-monotonic labels)
+  ├── model.py             → quantile regression per (horizon, quantile); no crossing
+  ├── baselines.py         → momentum, ARIMA, EWMA-GARCH + horizon/interval specs
+  └── backtest.py          → custom walk-forward harness; model-vs-baseline pinball
 
 src/pipeline/
-  └── run.py               → Prefect flow wiring all stages
+  ├── run.py               → in-process sequential flow wiring all stages (+ CLI)
+  └── api.py               → FastAPI POST /predict, GET /health
+
+scripts/
+  ├── train_model.py       → fit + persist a QuantileReturnModel artifact
+  ├── build_news_archive.py→ populate the point-in-time news archive
+  └── calibrate_graph.py   → estimate edge prob/lag → calibrated_edges.json
 ```
 
 ## Storage
