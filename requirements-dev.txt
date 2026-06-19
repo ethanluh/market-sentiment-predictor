@@ -1,0 +1,30 @@
+# Lightweight dependency set for CI / local testing.
+#
+# Tests mock the network clients (yfinance / NewsAPI / praw / sec-edgar) and
+# FinBERT (transformers/torch), and a guard asserts those heavy deps are never
+# imported — so they are intentionally omitted here to keep CI fast. Install the
+# full runtime stack from requirements.txt for live runs.
+
+# Scientific stack
+numpy>=1.26.0
+pandas>=2.2.0
+scipy>=1.13.0
+networkx>=3.3
+scikit-learn>=1.5.0
+statsmodels>=0.14.2
+joblib>=1.4.0
+pandas-market-calendars>=4.3.0
+
+# Serving (FastAPI TestClient needs httpx)
+fastapi>=0.111.0
+httpx>=0.27.0
+
+# Config
+python-dotenv>=1.0.0
+
+# Test / lint / type
+pytest>=8.0.0
+pytest-cov>=5.0.0
+black>=24.0.0
+isort>=5.13.0
+mypy>=1.10.0
