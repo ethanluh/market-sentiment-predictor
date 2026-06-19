@@ -10,14 +10,14 @@ reaches 50% of its peak concentration given a signal origin.
 
 from __future__ import annotations
 
-import numpy as np
 import networkx as nx
+import numpy as np
 from scipy.linalg import expm
 
 from src.graph.categories import (
     ALL_NODES,
-    NODE_INSTITUTIONAL,
     DEFAULT_EDGES,
+    NODE_INSTITUTIONAL,
     EdgeConfig,
 )
 
@@ -51,8 +51,16 @@ def laplacian(A: np.ndarray) -> np.ndarray:
 
 
 def diffuse(L: np.ndarray, s0: np.ndarray, t: float, alpha: float = 0.5) -> np.ndarray:
-    """Return signal concentration vector at time t."""
-    return expm(-alpha * L * t) @ s0
+    """
+    Return signal concentration vector at time t.
+
+    Signal flows *along* the directed edges (origin -> downstream actors). The
+    out-degree Laplacian ``L = D - A`` (with ``A[i, j]`` the weight of edge
+    i->j) couples node i to nodes it points to, which would propagate signal
+    backwards. We therefore propagate with the transpose, ``expm(-alpha L^T t)``,
+    so a one-hot at the origin spreads to its downstream neighbours.
+    """
+    return expm(-alpha * L.T * t) @ s0
 
 
 def estimate_lag(
