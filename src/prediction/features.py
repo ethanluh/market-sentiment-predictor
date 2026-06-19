@@ -68,6 +68,7 @@ FEATURE_NAMES: list[str] = [
     "realized_vol_20d",
     "volume_zscore",
     "search_interest_zscore",
+    "insider_flow_npr",
     "return_lag_1",
     "regime_label",
 ]
@@ -90,6 +91,7 @@ class FeatureVector:
     realized_vol_20d: float
     volume_zscore: float
     search_interest_zscore: float
+    insider_flow_npr: float
     return_lag_1: float
 
     # regime
@@ -239,6 +241,35 @@ def _search_interest_zscore(
     return float((tail.iloc[-1] - tail.mean()) / std) if std > 0 else 0.0
 
 
+def _insider_flow_npr(
+    insider_flow: pd.Series | None,
+    as_of: "pd.Timestamp | datetime",
+    window_days: int = 90,
+) -> float:
+    """
+    Point-in-time insider Net Purchase Ratio over the trailing ``window_days``.
+
+    ``insider_flow`` is a series of signed insider shares (positive = purchase,
+    negative = sale) indexed by filing date. Returns ``(buys - sells) /
+    (buys + sells)`` in [-1, 1] over filings in ``(as_of - window_days, as_of]``,
+    and ``0.0`` (neutral) when no series is supplied or there is no activity in
+    the window — so the feature is always finite (never NaN) and inert by default.
+    """
+    if insider_flow is None:
+        return 0.0
+    try:
+        lo = as_of - pd.Timedelta(days=window_days)
+        hist = insider_flow[(insider_flow.index > lo) & (insider_flow.index <= as_of)].dropna()
+    except TypeError:  # tz / index incompatibility -> neutral, don't crash
+        return 0.0
+    if hist.empty:
+        return 0.0
+    buys = float(hist[hist > 0].sum())
+    sells = float(-hist[hist < 0].sum())
+    denom = buys + sells
+    return (buys - sells) / denom if denom > 0 else 0.0
+
+
 def build_feature_vector(
     ticker: str,
     as_of: datetime,
@@ -250,6 +281,7 @@ def build_feature_vector(
     regime_classifier: "RegimeClassifier | None" = None,
     vix_value: float | None = None,
     trends: pd.Series | None = None,
+    insider_flow: pd.Series | None = None,
     alpha: float = 0.5,
     sector_window: int = 60,
     min_corr: float = 0.5,
@@ -279,6 +311,7 @@ def build_feature_vector(
     tech = compute_technical_features(prices, as_of)
     regime = _regime_label(regime_classifier, vix_value)
     search_z = _search_interest_zscore(trends, as_of)
+    insider_npr = _insider_flow_npr(insider_flow, as_of)
 
     return FeatureVector(
         ticker=ticker,
@@ -292,6 +325,7 @@ def build_feature_vector(
         realized_vol_20d=tech["realized_vol_20d"],
         volume_zscore=tech["volume_zscore"],
         search_interest_zscore=search_z,
+        insider_flow_npr=insider_npr,
         return_lag_1=tech["return_lag_1"],
         regime_label=regime,
     )
@@ -307,6 +341,7 @@ def build_feature_matrix(
     vix: pd.Series | None = None,
     regime_classifier: "RegimeClassifier | None" = None,
     trends: pd.Series | None = None,
+    insider_flow: pd.Series | None = None,
     **kwargs: object,
 ) -> pd.DataFrame:
     """
@@ -319,6 +354,7 @@ def build_feature_matrix(
     """
     vix_sorted = vix.sort_index() if vix is not None else None
     trends_sorted = trends.sort_index() if trends is not None else None
+    insider_sorted = insider_flow.sort_index() if insider_flow is not None else None
     vix_hits = 0
 
     rows: list[pd.Series] = []
@@ -336,6 +372,7 @@ def build_feature_matrix(
             regime_classifier=regime_classifier,
             vix_value=vix_value,
             trends=trends_sorted,
+            insider_flow=insider_sorted,
             **kwargs,  # type: ignore[arg-type]
         )
         rows.append(fv.to_series())

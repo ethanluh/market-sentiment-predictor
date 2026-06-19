@@ -64,6 +64,7 @@ class IngestBundle:
     sector_returns: object  # pd.DataFrame
     origin_hint: str | None = None  # forced diffusion origin (e.g. sec_corp on a filing)
     trends: object | None = None  # pd.Series of search interest (retail attention)
+    insider_flow: object | None = None  # pd.Series of signed insider shares (Form 4)
 
 
 @dataclass
@@ -155,6 +156,15 @@ def _ingest(
 
     trends = _safe("trends", _fetch_trends)
 
+    # Form 4 insider trades (sec_corp) — degrades gracefully like trends: a
+    # failure leaves the insider_flow_npr feature at its neutral 0.0.
+    def _fetch_form4() -> "pd.Series":
+        from src.ingestion.form4 import fetch_form4
+
+        return fetch_form4(ticker, after=since)
+
+    insider_flow = _safe("form4", _fetch_form4)
+
     return IngestBundle(
         ticker=ticker,
         as_of=as_of,
@@ -164,6 +174,7 @@ def _ingest(
         sector_returns=sector_returns,
         origin_hint=origin_hint,
         trends=trends,
+        insider_flow=insider_flow,
     )
 
 
@@ -192,6 +203,7 @@ def _features(bundle: IngestBundle, articles: list[ScoredArticle]):  # type: ign
         bundle.sector_returns,
         origin_node=bundle.origin_hint,
         trends=bundle.trends,
+        insider_flow=bundle.insider_flow,
     )
 
 
