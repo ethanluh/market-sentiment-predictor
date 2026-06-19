@@ -212,6 +212,7 @@ def run_backtest(
     peers: list[str] | None = None,
     vix: "pd.Series | None" = None,
     trends: "pd.Series | None" = None,
+    insider_flow: "pd.Series | None" = None,
     use_news_archive: bool = False,
     lookback_days: int = 7,
 ) -> BacktestResult:
@@ -233,6 +234,8 @@ def run_backtest(
         otherwise it is -1.
       - ``trends`` (a Google search-interest series) makes
         ``search_interest_zscore`` live; otherwise it is 0.0.
+      - ``insider_flow`` (a signed-insider-shares series from Form 4) makes
+        ``insider_flow_npr`` live; otherwise it is 0.0.
     """
     from src.ingestion.price import fetch_prices  # lazy: network
     from src.prediction.baselines import horizon_to_interval, horizon_to_steps
@@ -273,13 +276,14 @@ def run_backtest(
             ("sector_proximity", bool(peers)),
             ("regime_label", vix is not None),
             ("search_interest_zscore", trends is not None),
+            ("insider_flow_npr", insider_flow is not None),
         ]
         if not active
     ]
     if inert:
         logger.warning(
             "run_backtest: the following features are neutralized in this call: %s. "
-            "Enable use_news_archive / peers / vix / trends to activate them.",
+            "Enable use_news_archive / peers / vix / trends / insider_flow to activate them.",
             ", ".join(inert),
         )
 
@@ -292,6 +296,7 @@ def run_backtest(
         vix=vix,
         regime_classifier=regime_classifier,
         trends=trends,
+        insider_flow=insider_flow,
     ).dropna()
 
     steps = horizon_to_steps(horizon)

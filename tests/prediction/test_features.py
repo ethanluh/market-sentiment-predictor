@@ -52,6 +52,16 @@ def _make_trends(
     return pd.Series(rng.integers(0, 100, n).astype(float), index=idx, name="search_interest")
 
 
+def _make_insider_flow(
+    dates_shares: list[tuple[str, float]] | None = None,
+) -> pd.Series:
+    """Signed-insider-shares Series (UTC index); +buy / -sell, per filing date."""
+    if dates_shares is None:
+        dates_shares = [("2023-03-01", 1000.0), ("2023-03-10", 500.0), ("2023-03-15", -300.0)]
+    idx = pd.DatetimeIndex([pd.Timestamp(d, tz="UTC") for d, _ in dates_shares])
+    return pd.Series([s for _, s in dates_shares], index=idx, name="insider_net_shares")
+
+
 def _articles(as_of: datetime) -> list[ScoredArticle]:
     return [
         ScoredArticle(0.6, NODE_SEC_CORP, as_of - timedelta(hours=2)),
@@ -210,6 +220,69 @@ class TestSearchInterest:
         )
         as_of = pd.Timestamp("2023-02-01", tz="UTC")
         assert _search_interest_zscore(naive, as_of) == 0.0
+
+
+class TestInsiderFlow:
+    def test_inert_zero_when_no_insider_flow(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = prices.index[80].to_pydatetime()
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector)  # insider_flow=None
+        assert fv.insider_flow_npr == 0.0
+
+    def test_npr_in_range_and_signed(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = pd.Timestamp("2023-03-20", tz="UTC").to_pydatetime()
+        flow = _make_insider_flow()  # buys 1500, sells 300 within window
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector, insider_flow=flow)
+        assert -1.0 <= fv.insider_flow_npr <= 1.0
+        # Net buying -> positive NPR = (1500 - 300) / (1500 + 300).
+        assert fv.insider_flow_npr == pytest.approx((1500 - 300) / (1500 + 300))
+
+    def test_zero_when_no_activity_in_window(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = pd.Timestamp("2023-03-20", tz="UTC").to_pydatetime()
+        # All trades are >90 days before as_of -> nothing in the trailing window.
+        old = _make_insider_flow([("2022-01-01", 1000.0), ("2022-02-01", -500.0)])
+        fv = build_feature_vector("AAPL", as_of, [], prices, sector, insider_flow=old)
+        assert fv.insider_flow_npr == 0.0
+
+    def test_out_of_window_trades_excluded(self):
+        from src.prediction.features import _insider_flow_npr
+
+        as_of = pd.Timestamp("2023-06-01", tz="UTC")
+        # One old buy (outside 90d) and one recent sell (inside) -> pure sell signal.
+        flow = _make_insider_flow([("2023-01-01", 9999.0), ("2023-05-20", -100.0)])
+        assert _insider_flow_npr(flow, as_of) == -1.0
+
+    def test_no_lookahead(self):
+        prices = _make_prices()
+        sector = _make_sector_returns()
+        as_of = pd.Timestamp("2023-03-20", tz="UTC").to_pydatetime()
+        flow = _make_insider_flow()
+        before = build_feature_vector(
+            "AAPL", as_of, [], prices, sector, insider_flow=flow
+        ).insider_flow_npr
+        # A large future sale (after as_of) must not change the value at as_of.
+        future = pd.concat(
+            [
+                flow,
+                pd.Series([-1e6], index=pd.DatetimeIndex([pd.Timestamp("2023-04-01", tz="UTC")])),
+            ]
+        )
+        after = build_feature_vector(
+            "AAPL", as_of, [], prices, sector, insider_flow=future
+        ).insider_flow_npr
+        assert before == after
+
+    def test_tz_mismatch_degrades_to_zero(self):
+        from src.prediction.features import _insider_flow_npr
+
+        naive = pd.Series([1000.0], index=pd.date_range("2023-03-01", periods=1, freq="D"))
+        as_of = pd.Timestamp("2023-03-20", tz="UTC")
+        assert _insider_flow_npr(naive, as_of) == 0.0
 
 
 class TestVixAsof:

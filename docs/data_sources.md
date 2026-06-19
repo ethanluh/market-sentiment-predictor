@@ -34,7 +34,13 @@ Fetched via `sec-edgar-downloader` (`src/ingestion/filings.py`); used as the
 |---|---|---|
 | 8-K | Material events (earnings, M&A, leadership) | ✅ |
 | 10-Q / 10-K | Periodic financials | ✅ |
-| Form 4 | Insider trading disclosures | 🔜 |
+| Form 4 | Insider trading disclosures | ✅ |
+
+Form 4 feeds the `insider_flow_npr` feature (`src/ingestion/form4.py`): a Net
+Purchase Ratio `(buys − sells) / (buys + sells)` over a trailing 90-day window,
+restricted to discretionary open-market codes (P/S) and gated by the SEC
+acceptance datetime (no look-ahead). The pipeline degrades gracefully to a
+neutral value when no filings are returned.
 
 ## Social
 

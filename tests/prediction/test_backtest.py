@@ -323,3 +323,24 @@ class TestRunBacktestInterval:
             trends=trends,
         )
         assert result.n_predictions > 0
+
+    def test_form4_wires_insider_flow(self, monkeypatch):
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+
+        rng = np.random.default_rng(3)
+        signed = rng.integers(-5000, 5000, len(prices)).astype(float)
+        insider_flow = pd.Series(signed, index=prices.index)
+
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1d",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            insider_flow=insider_flow,
+        )
+        assert result.n_predictions > 0

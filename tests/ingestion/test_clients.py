@@ -167,6 +167,139 @@ class TestFilingsClient:
 
 
 # --------------------------------------------------------------------------- #
+# form4.fetch_form4 (SEC Form 4 insider trades)
+# --------------------------------------------------------------------------- #
+def _form4_xml(transactions) -> str:
+    """Build an ownershipDocument XML from (code, acquired_disposed, shares) rows."""
+    rows = "".join(f"""
+        <nonDerivativeTransaction>
+          <securityTitle><value>Common Stock</value></securityTitle>
+          <transactionDate><value>2023-03-09</value></transactionDate>
+          <transactionCoding>
+            <transactionFormType>4</transactionFormType>
+            <transactionCode>{code}</transactionCode>
+            <equitySwapInvolved>0</equitySwapInvolved>
+          </transactionCoding>
+          <transactionAmounts>
+            <transactionShares><value>{shares}</value></transactionShares>
+            <transactionPricePerShare><value>150.0</value></transactionPricePerShare>
+            <transactionAcquiredDisposedCode><value>{ad}</value></transactionAcquiredDisposedCode>
+          </transactionAmounts>
+        </nonDerivativeTransaction>""" for code, ad, shares in transactions)
+    return (
+        '<?xml version="1.0"?>\n'
+        "<ownershipDocument><documentType>4</documentType>"
+        f"<nonDerivativeTable>{rows}</nonDerivativeTable></ownershipDocument>"
+    )
+
+
+class _Form4Downloader:
+    def __init__(self, *a, **k):
+        pass
+
+    def get(self, *a, **k):
+        return 0
+
+
+class TestForm4Client:
+    def _make_tree(self, root, ticker="AAPL", with_informative=True):
+        base = root / "sec-edgar-filings" / ticker / "4"
+        # acc-buy: a P purchase (+1000) + an A grant (must be excluded); parsed
+        # from the clean primary-document.xml.
+        (base / "acc-buy").mkdir(parents=True)
+        (base / "acc-buy" / "full-submission.txt").write_text(
+            "<ACCEPTANCE-DATETIME>20230310140000\n"
+        )
+        buy_txns = [("P", "A", 1000), ("A", "A", 5000)] if with_informative else [("A", "A", 5000)]
+        (base / "acc-buy" / "primary-document.xml").write_text(_form4_xml(buy_txns))
+        # acc-sell: an S sale (-2000), parsed via the full-submission.txt SGML fallback.
+        (base / "acc-sell").mkdir(parents=True)
+        sell_xml = (
+            _form4_xml([("S", "D", 2000)]) if with_informative else _form4_xml([("M", "A", 7000)])
+        )
+        (base / "acc-sell" / "full-submission.txt").write_text(
+            "<ACCEPTANCE-DATETIME>20230320140000\n" + sell_xml
+        )
+
+    def _install(self, monkeypatch, tmp_path, **kw):
+        import src.ingestion.filings as filings_mod
+
+        monkeypatch.setattr(filings_mod, "EDGAR_DOWNLOAD_ROOT", tmp_path)
+        monkeypatch.setitem(
+            sys.modules, "sec_edgar_downloader", types.SimpleNamespace(Downloader=_Form4Downloader)
+        )
+        self._make_tree(tmp_path, **kw)
+
+    def test_parses_signed_ps_transactions_and_excludes_routine(self, monkeypatch, tmp_path):
+        self._install(monkeypatch, tmp_path)
+        from src.ingestion.form4 import fetch_form4
+
+        s = fetch_form4("AAPL")
+        assert s.name == "insider_net_shares"
+        assert s.index.tz is not None
+        # Two informative transactions: P buy (+1000), S sale (-2000). A grant dropped.
+        assert sorted(s.tolist()) == [-2000.0, 1000.0]
+        # The purchase is stamped with the earlier acceptance datetime.
+        assert s.loc[s == 1000.0].index[0] == pd.Timestamp("2023-03-10 14:00", tz="UTC")
+
+    def test_uses_acceptance_datetime_index(self, monkeypatch, tmp_path):
+        self._install(monkeypatch, tmp_path)
+        from src.ingestion.form4 import fetch_form4
+
+        s = fetch_form4("AAPL")
+        assert set(s.index) == {
+            pd.Timestamp("2023-03-10 14:00", tz="UTC"),
+            pd.Timestamp("2023-03-20 14:00", tz="UTC"),
+        }
+
+    def test_no_informative_transactions_raises(self, monkeypatch, tmp_path):
+        # Only grants (A) / option exercises (M) present -> no P/S signal.
+        self._install(monkeypatch, tmp_path, with_informative=False)
+        from src.ingestion.form4 import fetch_form4
+
+        with pytest.raises(ValueError, match="No Form 4 insider transactions"):
+            fetch_form4("AAPL")
+
+
+class TestForm4Parser:
+    """Defensive parsing: malformed input contributes nothing, never crashes."""
+
+    def test_malformed_xml_returns_empty(self, tmp_path):
+        from src.ingestion.form4 import _parse_form4_transactions
+
+        (tmp_path / "primary-document.xml").write_text("<ownershipDocument><not closed")
+        assert _parse_form4_transactions(tmp_path) == []
+
+    def test_missing_ownership_doc_returns_empty(self, tmp_path):
+        from src.ingestion.form4 import _parse_form4_transactions
+
+        # full-submission.txt without an <ownershipDocument> block.
+        (tmp_path / "full-submission.txt").write_text("<SEC-HEADER>only header</SEC-HEADER>")
+        assert _parse_form4_transactions(tmp_path) == []
+
+    def test_no_files_returns_empty(self, tmp_path):
+        from src.ingestion.form4 import _parse_form4_transactions
+
+        assert _parse_form4_transactions(tmp_path) == []
+
+    def test_transaction_missing_shares_is_skipped(self, tmp_path):
+        from src.ingestion.form4 import _parse_form4_transactions
+
+        # A P transaction with no <transactionShares> must be skipped, not crash.
+        xml = (
+            '<?xml version="1.0"?><ownershipDocument><nonDerivativeTable>'
+            "<nonDerivativeTransaction><transactionCoding>"
+            "<transactionCode>P</transactionCode></transactionCoding>"
+            "<transactionAmounts>"
+            "<transactionAcquiredDisposedCode><value>A</value></transactionAcquiredDisposedCode>"
+            "</transactionAmounts></nonDerivativeTransaction>"
+            "</nonDerivativeTable></ownershipDocument>"
+        )
+        (tmp_path / "primary-document.xml").write_text(xml)
+        assert _parse_form4_transactions(tmp_path) == []
+
+
+# --------------------------------------------------------------------------- #
 # trends.fetch_trends (Google Trends via pytrends)
 # --------------------------------------------------------------------------- #
 def _install_pytrends(monkeypatch, frame=None, raise_on_call=False, captured=None):
