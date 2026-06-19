@@ -4,8 +4,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from src.sentiment.aggregation import ScoredArticle, aggregate
 from src.graph.categories import NODE_FIN_PRESS, NODE_UNINFORMED_RETAIL
+from src.sentiment.aggregation import ScoredArticle, aggregate
 
 
 def _article(score: float, source: str, hours_ago: float, ref: datetime) -> ScoredArticle:

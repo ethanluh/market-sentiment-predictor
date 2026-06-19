@@ -6,17 +6,17 @@ import pytest
 
 from src.graph.categories import (
     ALL_NODES,
-    NODE_SEC_CORP,
-    NODE_INSTITUTIONAL,
-    NODE_UNINFORMED_RETAIL,
     DEFAULT_EDGES,
+    NODE_INSTITUTIONAL,
+    NODE_SEC_CORP,
+    NODE_UNINFORMED_RETAIL,
 )
 from src.graph.diffusion import (
-    build_graph,
     adjacency_matrix,
-    laplacian,
+    build_graph,
     diffuse,
     estimate_lag,
+    laplacian,
 )
 from src.graph.sector import build_sector_graph, sector_proximity
 
@@ -64,10 +64,7 @@ class TestSectorGraph:
         rng = np.random.default_rng(seed)
         # Create correlated returns: all tickers share a common factor
         common = rng.normal(0, 0.01, n_days)
-        data = {
-            f"TICK{i}": common + rng.normal(0, 0.005, n_days)
-            for i in range(n_tickers)
-        }
+        data = {f"TICK{i}": common + rng.normal(0, 0.005, n_days) for i in range(n_tickers)}
         return pd.DataFrame(data)
 
     def test_graph_has_edges(self):

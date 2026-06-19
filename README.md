@@ -28,7 +28,7 @@ News / Filings / Social
         │
         ▼
   [5] Backtesting & Serving
-  vectorbt backtest · FastAPI endpoint
+  custom walk-forward backtest · FastAPI endpoint
 ```
 
 ## Quickstart
@@ -80,16 +80,15 @@ data/
 
 **Regime conditioning** — VIX is discretized into low/medium/high regimes (k-means, k=3) and used as a conditioning variable, since sentiment predictiveness varies significantly with volatility.
 
+**Lightweight stack** — Orchestration is an in-process sequential flow (`src/pipeline/run.py`, no Prefect) and backtesting is a custom walk-forward harness (`src/prediction/backtest.py`, no vectorbt), keeping the dependency footprint to the scientific stack + FastAPI + FinBERT.
+
 ## Dependencies
 
 See `requirements.txt`. Core:
 - `transformers`, `torch` — FinBERT inference
 - `yfinance`, `sec-edgar-downloader`, `newsapi-python`, `praw` — data ingestion
 - `networkx`, `scipy` — graph construction and Laplacian diffusion
-- `scikit-learn`, `statsmodels` — quantile regression, ARIMA/GARCH baselines
-- `vectorbt` — backtesting
-- `prefect` — pipeline orchestration
-- `mlflow` — experiment tracking
+- `scikit-learn`, `statsmodels` — quantile regression, ARIMA/GARCH-like baselines
 - `fastapi`, `uvicorn` — serving
 
 ## References

@@ -8,9 +8,9 @@ Feature: sector_proximity = 1 / mean_shortest_path_distance(peers → target).
 
 from __future__ import annotations
 
+import networkx as nx
 import numpy as np
 import pandas as pd
-import networkx as nx
 
 
 def build_sector_graph(
@@ -36,7 +36,7 @@ def build_sector_graph(
     tickers = corr.columns.tolist()
     G.add_nodes_from(tickers)
     for i, t1 in enumerate(tickers):
-        for t2 in tickers[i + 1:]:
+        for t2 in tickers[i + 1 :]:
             w = corr.loc[t1, t2]
             if not np.isnan(w) and abs(w) >= min_corr:
                 G.add_edge(t1, t2, weight=abs(w))
@@ -57,7 +57,9 @@ def sector_proximity(G: nx.Graph, target: str) -> float:
         G[u][v]["distance"] = 1.0 / (d["weight"] + 1e-9)
 
     try:
-        lengths = nx.single_target_shortest_path_length(G, target, weight="distance")
+        # Undirected graph: shortest weighted distance from `target` to every
+        # reachable peer (Dijkstra over the 1/correlation distances above).
+        lengths = nx.single_source_dijkstra_path_length(G, target, weight="distance")
         distances = [d for node, d in lengths.items() if node != target and d > 0]
         if not distances:
             return 0.0

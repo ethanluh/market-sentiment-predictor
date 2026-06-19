@@ -14,9 +14,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from src.graph.categories import (
-    NODE_SEC_CORP,
     NODE_FIN_PRESS,
     NODE_INFORMED_RETAIL,
+    NODE_SEC_CORP,
     NODE_UNINFORMED_RETAIL,
 )
 
@@ -37,17 +37,17 @@ CREDIBILITY: dict[str, float] = {
 
 # Decay rate (lambda) per source category — faster decay = more time-sensitive
 DECAY_LAMBDA: dict[str, float] = {
-    NODE_SEC_CORP: 0.02,          # slow decay; filings stay relevant
+    NODE_SEC_CORP: 0.02,  # slow decay; filings stay relevant
     NODE_FIN_PRESS: 0.10,
     NODE_INFORMED_RETAIL: 0.20,
-    NODE_UNINFORMED_RETAIL: 0.40, # fast decay; social noise
+    NODE_UNINFORMED_RETAIL: 0.40,  # fast decay; social noise
     "unknown": 0.15,
 }
 
 
 @dataclass
 class ScoredArticle:
-    score: float          # sentiment score in [-1, 1]
+    score: float  # sentiment score in [-1, 1]
     source_category: str  # must be a key in CREDIBILITY
     published_at: datetime
 

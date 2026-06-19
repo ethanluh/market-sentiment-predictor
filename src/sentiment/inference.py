@@ -11,7 +11,7 @@ where p_* are softmax probabilities from ProsusAI/finbert.
 from __future__ import annotations
 
 import torch
-from transformers import BertTokenizer, BertForSequenceClassification
+from transformers import BertForSequenceClassification, BertTokenizer
 
 _MODEL_NAME = "ProsusAI/finbert"
 _tokenizer: BertTokenizer | None = None
@@ -59,5 +59,5 @@ def score_batch(texts: list[str], max_length: int = 512) -> list[float]:
     with torch.no_grad():
         logits = model(**inputs).logits
     probs = torch.softmax(logits, dim=1)  # (N, 3)
-    scores = probs[:, 2] - probs[:, 0]   # p_pos - p_neg
+    scores = probs[:, 2] - probs[:, 0]  # p_pos - p_neg
     return scores.tolist()
