@@ -8,13 +8,15 @@ import pytest
 
 from src.prediction.backtest import (
     BacktestResult,
+    _sharpe,
     interval_coverage,
+    main,
     pinball_loss,
     run_backtest,
     walk_forward,
 )
 from src.prediction.features import FEATURE_NAMES
-from src.prediction.model import QuantileReturnModel
+from src.prediction.model import QuantilePrediction, QuantileReturnModel
 
 
 def test_pinball_loss_known_value():
@@ -77,6 +79,120 @@ class TestWalkForward:
         model = QuantileReturnModel(horizons=("1d",), backend="linear")
         result = walk_forward(model, X, targets, train_window=200, test_window=20, step=20)
         assert result.baseline_pinball == {}
+
+
+class _FakeModel:
+    """Minimal QuantileReturnModel stand-in for exercising walk_forward folds.
+
+    ``available_horizon=None`` mimics a fit that produced no usable horizon (so
+    every fold is skipped); otherwise ``predict`` returns ``preds`` for it.
+    """
+
+    def __init__(self, *, available_horizon: str | None, preds=None):
+        self.available_horizon = available_horizon
+        self.preds = preds or []
+        self._available: dict[str, object] = {}
+
+    def fit(self, X, targets):
+        if self.available_horizon is not None:
+            self._available[self.available_horizon] = object()
+        return self
+
+    def predict(self, X):
+        if self.available_horizon is None:
+            return {}
+        return {self.available_horizon: list(self.preds)}
+
+
+class TestSharpe:
+    def test_too_few_points_is_zero(self):
+        assert _sharpe(pd.Series([0.01])) == 0.0
+
+    def test_zero_variance_is_zero(self):
+        assert _sharpe(pd.Series([0.01, 0.01, 0.01])) == 0.0
+
+    def test_positive_drift_is_positive(self):
+        assert _sharpe(pd.Series([0.01, 0.02, 0.015, 0.012])) > 0.0
+
+
+class TestWalkForwardEdgeCases:
+    def test_horizon_never_available_returns_empty(self):
+        # A model that fits but exposes no horizon -> every fold skipped.
+        X, targets = _features_targets()
+        model = _FakeModel(available_horizon=None)
+        result = walk_forward(model, X, targets, train_window=200, test_window=20, step=20)
+        assert result.n_predictions == 0
+        assert result.pinball_loss == {}
+        assert result.pnl_curve.empty
+
+    def test_nan_actuals_are_skipped(self):
+        X, targets = _features_targets()
+        y = targets["1d"].copy()
+        y.iloc[200] = np.nan  # first evaluated position of the first fold
+        preds = [QuantilePrediction(-0.01, 0.0, 0.01)] * 20
+        model = _FakeModel(available_horizon="1d", preds=preds)
+        result = walk_forward(model, X, {"1d": y}, train_window=200, test_window=20, step=20)
+        # The NaN actual is dropped but the remaining predictions still score.
+        assert result.n_predictions > 0
+        assert result.n_predictions < 20 * (len(X) - 200) // 20
+
+    def test_baseline_failure_falls_back_to_zero(self):
+        class _ExplodingBaseline:
+            def fit(self, returns):
+                raise RuntimeError("baseline blew up")
+
+            def predict(self, horizon):  # pragma: no cover - never reached
+                raise AssertionError("predict should not be called after fit fails")
+
+        X, targets = _features_targets()
+        returns = targets["1d"]
+        model = QuantileReturnModel(horizons=("1d",), backend="linear")
+        result = walk_forward(
+            model,
+            X,
+            targets,
+            train_window=200,
+            test_window=20,
+            step=20,
+            returns=returns,
+            baselines={"boom": _ExplodingBaseline()},
+        )
+        # The failing baseline still appears, scored against its zero forecasts.
+        assert "boom" in result.baseline_pinball
+        assert all(np.isfinite(v) for v in result.baseline_pinball["boom"].values())
+
+
+class TestMainCLI:
+    def _result(self, with_baselines: bool) -> BacktestResult:
+        r = BacktestResult()
+        r.n_predictions = 5
+        r.pinball_loss = {"1d_p10": 0.1, "1d_p50": 0.2, "1d_p90": 0.1}
+        r.coverage = {"1d": 0.8}
+        r.directional_hit_rate = {"1d": 0.6}
+        r.sharpe = 1.23
+        if with_baselines:
+            r.baseline_pinball = {"momentum": {"p10": 0.2, "p50": 0.3, "p90": 0.2}}
+        return r
+
+    def test_main_prints_summary(self, monkeypatch, capsys):
+        import src.prediction.backtest as bt
+
+        monkeypatch.setattr(bt, "run_backtest", lambda *a, **k: self._result(False))
+        rc = main(["--ticker", "AAPL", "--start", "2024-01-01"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Backtest AAPL" in out
+        assert "sharpe" in out
+
+    def test_main_prints_baseline_comparison(self, monkeypatch, capsys):
+        import src.prediction.backtest as bt
+
+        monkeypatch.setattr(bt, "run_backtest", lambda *a, **k: self._result(True))
+        rc = main(["--ticker", "AAPL", "--start", "2024-01-01", "--horizon", "1d"])
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "model vs baselines" in out
+        assert "momentum" in out
 
 
 def _synthetic_prices(n: int = 300, freq: str = "D", seed: int = 0) -> pd.DataFrame:
@@ -142,3 +258,49 @@ class TestRunBacktestInterval:
         )
         assert calls["made"] == 1
         assert calls["read"] > 0
+
+    def test_peers_wire_sector_returns_matrix(self, monkeypatch):
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+
+        captured = {}
+
+        def _fake_returns_matrix(tickers, start=None, end=None, interval="1d"):
+            captured["tickers"] = list(tickers)
+            return pd.DataFrame({t: prices["log_return"] for t in tickers}, index=prices.index)
+
+        monkeypatch.setattr(price_mod, "fetch_returns_matrix", _fake_returns_matrix)
+
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1d",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            peers=["MSFT", "GOOG"],
+        )
+        assert captured["tickers"] == ["AAPL", "MSFT", "GOOG"]
+        assert result.n_predictions > 0
+
+    def test_vix_wires_regime_classifier(self, monkeypatch):
+        import src.ingestion.price as price_mod
+
+        prices = _synthetic_prices()
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: prices)
+
+        rng = np.random.default_rng(1)
+        vix = pd.Series(15 + rng.normal(0, 3, len(prices)).cumsum() % 20, index=prices.index)
+
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1d",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            vix=vix,
+        )
+        assert result.n_predictions > 0
