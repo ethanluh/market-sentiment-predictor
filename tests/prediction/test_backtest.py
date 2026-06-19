@@ -132,9 +132,8 @@ class TestWalkForwardEdgeCases:
         preds = [QuantilePrediction(-0.01, 0.0, 0.01)] * 20
         model = _FakeModel(available_horizon="1d", preds=preds)
         result = walk_forward(model, X, {"1d": y}, train_window=200, test_window=20, step=20)
-        # The NaN actual is dropped but the remaining predictions still score.
-        assert result.n_predictions > 0
-        assert result.n_predictions < 20 * (len(X) - 200) // 20
+        # 6 folds (starts 0,20,...,100) x 20 preds = 120, minus the 1 NaN actual.
+        assert result.n_predictions == 119
 
     def test_baseline_failure_falls_back_to_zero(self):
         class _ExplodingBaseline:
