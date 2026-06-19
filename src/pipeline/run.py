@@ -20,13 +20,18 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from functools import wraps
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, Callable, TypeVar
 
 from src.sentiment.aggregation import ScoredArticle
+
+if TYPE_CHECKING:  # for type-only annotations of the lazy source fetchers
+    from src.ingestion.filings import Filing
+    from src.ingestion.social import SocialPost
 
 logger = logging.getLogger("pipeline.run")
 
 F = TypeVar("F", bound=Callable[..., object])
+T = TypeVar("T")
 
 
 def step(name: str) -> Callable[[F], F]:
@@ -55,6 +60,7 @@ class IngestBundle:
     article_meta: list[ScoredArticle]  # everything except the score (score=0 placeholder)
     prices: object  # pd.DataFrame
     sector_returns: object  # pd.DataFrame
+    origin_hint: str | None = None  # forced diffusion origin (e.g. sec_corp on a filing)
 
 
 @dataclass
@@ -68,12 +74,30 @@ class PredictionResult:
         return json.dumps(asdict(self), indent=2, default=str)
 
 
+def _safe(source: str, fn: Callable[[], T]) -> T | None:
+    """Run a supplementary source fetch, degrading to ``None`` on any failure.
+
+    Network errors / missing credentials for one source (e.g. no Reddit creds)
+    should not abort the whole ingest — only prices are essential.
+    """
+    try:
+        return fn()
+    except Exception as exc:  # noqa: BLE001 - intentional broad degrade
+        logger.warning("ingest: source %s unavailable (%s); skipping", source, exc)
+        return None
+
+
 @step("ingest")
 def _ingest(
-    ticker: str, as_of: datetime, interval: str = "1d", lookback_days: int = 7
+    ticker: str,
+    as_of: datetime,
+    interval: str = "1d",
+    lookback_days: int = 7,
+    subreddits: list[str] | None = None,
 ) -> IngestBundle:
     from datetime import timedelta
 
+    from src.graph.categories import NODE_SEC_CORP
     from src.ingestion.news import fetch_news, to_scored_article
     from src.ingestion.price import fetch_prices, fetch_returns_matrix
 
@@ -83,18 +107,50 @@ def _ingest(
     price_days = 60 if interval not in ("1d", "1wk", "1mo") else 180
     price_start = (as_of - timedelta(days=price_days)).date().isoformat()
 
-    articles = fetch_news(ticker, since=since)
+    # Prices are essential — let a failure propagate.
     prices = fetch_prices(ticker, start=price_start, interval=interval)
     sector_returns = fetch_returns_matrix([ticker], start=price_start, interval=interval)
 
-    meta = [to_scored_article(a, 0.0) for a in articles]
+    texts: list[str] = []
+    meta: list[ScoredArticle] = []
+
+    # News (financial press) — text-bearing sentiment.
+    for article in _safe("news", lambda: fetch_news(ticker, since=since)) or []:
+        texts.append(article.text)
+        meta.append(to_scored_article(article, 0.0))
+
+    # Social (retail) — text-bearing sentiment.
+    def _fetch_social() -> "list[SocialPost]":
+        from src.ingestion.social import fetch_reddit
+
+        return fetch_reddit(ticker, subreddits=subreddits)
+
+    for post in _safe("social", _fetch_social) or []:
+        texts.append(post.text)
+        meta.append(
+            ScoredArticle(
+                score=0.0, source_category=post.source_category, published_at=post.created_at
+            )
+        )
+
+    # Filings (sec_corp) — origin/timing signal. A recent filing forces the
+    # diffusion origin to sec_corp (the fastest edge), shaping estimated_lag.
+    def _fetch_filings() -> "list[Filing]":
+        from src.ingestion.filings import fetch_filings
+
+        return fetch_filings(ticker)
+
+    filings = _safe("filings", _fetch_filings) or []
+    origin_hint = NODE_SEC_CORP if any(f.filed_at >= since for f in filings) else None
+
     return IngestBundle(
         ticker=ticker,
         as_of=as_of,
-        articles_text=[a.text for a in articles],
+        articles_text=texts,
         article_meta=meta,
         prices=prices,
         sector_returns=sector_returns,
+        origin_hint=origin_hint,
     )
 
 
@@ -121,6 +177,7 @@ def _features(bundle: IngestBundle, articles: list[ScoredArticle]):  # type: ign
         articles,
         bundle.prices,
         bundle.sector_returns,
+        origin_node=bundle.origin_hint,
     )
 
 
