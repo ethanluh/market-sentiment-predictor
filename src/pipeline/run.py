@@ -69,20 +69,23 @@ class PredictionResult:
 
 
 @step("ingest")
-def _ingest(ticker: str, as_of: datetime, lookback_days: int = 7) -> IngestBundle:
+def _ingest(
+    ticker: str, as_of: datetime, interval: str = "1d", lookback_days: int = 7
+) -> IngestBundle:
     from datetime import timedelta
 
-    from src.ingestion.news import fetch_news
+    from src.ingestion.news import fetch_news, to_scored_article
     from src.ingestion.price import fetch_prices, fetch_returns_matrix
 
     since = as_of - timedelta(days=lookback_days)
-    articles = fetch_news(ticker, since=since)
-    prices = fetch_prices(ticker, start=(as_of - timedelta(days=180)).date().isoformat())
-    sector_returns = fetch_returns_matrix(
-        [ticker], start=(as_of - timedelta(days=180)).date().isoformat()
-    )
+    # Intraday history is short-lived on Yahoo Finance; use a tighter price window
+    # for intraday intervals and a long window for daily bars.
+    price_days = 60 if interval not in ("1d", "1wk", "1mo") else 180
+    price_start = (as_of - timedelta(days=price_days)).date().isoformat()
 
-    from src.ingestion.news import to_scored_article
+    articles = fetch_news(ticker, since=since)
+    prices = fetch_prices(ticker, start=price_start, interval=interval)
+    sector_returns = fetch_returns_matrix([ticker], start=price_start, interval=interval)
 
     meta = [to_scored_article(a, 0.0) for a in articles]
     return IngestBundle(
@@ -159,18 +162,31 @@ def run(
     as_of: datetime | None = None,
 ) -> PredictionResult:
     """Run the full pipeline for ``ticker`` and return a prediction result."""
+    from src.prediction.baselines import horizon_to_interval
+
     horizons = horizons or [horizon]
     as_of = as_of or datetime.now(timezone.utc)
-
-    bundle = _ingest(ticker, as_of)
-    scored = _score(bundle)
-    feature_vector = _features(bundle, scored)
     model = _load_model(model_path)
-    predictions = _predict(model, feature_vector, horizons)
+
+    # Group horizons by the price-bar interval they are measured on, so "1h"
+    # is predicted from hourly bars and "1d"/"5d" from daily bars.
+    by_interval: dict[str, list[str]] = {}
+    for h in horizons:
+        by_interval.setdefault(horizon_to_interval(h), []).append(h)
+
+    predictions: dict[str, dict[str, float]] = {}
+    estimated_lag = 0.0
+    scored: list[ScoredArticle] = []
+    for interval, interval_horizons in by_interval.items():
+        bundle = _ingest(ticker, as_of, interval=interval)
+        scored = _score(bundle)
+        feature_vector = _features(bundle, scored)
+        estimated_lag = feature_vector.estimated_lag_hours
+        predictions.update(_predict(model, feature_vector, interval_horizons))
 
     return PredictionResult(
         ticker=ticker,
-        estimated_lag_hours=feature_vector.estimated_lag_hours,
+        estimated_lag_hours=estimated_lag,
         predictions=predictions,
         top_articles=_top_articles(scored),
     )

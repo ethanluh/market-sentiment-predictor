@@ -10,6 +10,7 @@ from src.prediction.backtest import (
     BacktestResult,
     interval_coverage,
     pinball_loss,
+    run_backtest,
     walk_forward,
 )
 from src.prediction.features import FEATURE_NAMES
@@ -58,3 +59,68 @@ class TestWalkForward:
         model = QuantileReturnModel(horizons=("1d",), backend="linear")
         with pytest.raises(ValueError):
             walk_forward(model, X, targets, train_window=200, test_window=20)
+
+
+def _synthetic_prices(n: int = 300, freq: str = "D", seed: int = 0) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    idx = pd.date_range("2024-01-01", periods=n, freq=freq, tz="UTC")
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    df = pd.DataFrame({"close": close, "volume": rng.integers(1e6, 5e6, n)}, index=idx)
+    df["log_return"] = np.log(df["close"] / df["close"].shift(1))
+    return df
+
+
+class TestRunBacktestInterval:
+    def test_intraday_horizon_uses_hourly_interval(self, monkeypatch):
+        captured = {}
+
+        def _fake_fetch(ticker, start=None, end=None, interval="1d"):
+            captured["interval"] = interval
+            freq = "h" if interval == "1h" else "D"
+            return _synthetic_prices(freq=freq)
+
+        import src.ingestion.price as price_mod
+
+        monkeypatch.setattr(price_mod, "fetch_prices", _fake_fetch)
+
+        result = run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1h",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+        )
+        assert captured["interval"] == "1h"
+        assert result.n_predictions > 0
+
+    def test_news_archive_reader_is_wired(self, monkeypatch):
+        import src.ingestion.news_archive as na
+        import src.ingestion.price as price_mod
+
+        monkeypatch.setattr(price_mod, "fetch_prices", lambda *a, **k: _synthetic_prices())
+
+        calls = {"made": 0, "read": 0}
+
+        def _fake_make_reader(ticker, lookback_days=7):
+            calls["made"] += 1
+
+            def _reader(as_of):
+                calls["read"] += 1
+                return []
+
+            return _reader
+
+        monkeypatch.setattr(na, "make_archive_reader", _fake_make_reader)
+
+        run_backtest(
+            "AAPL",
+            start="2024-01-01",
+            horizon="1d",
+            backend="linear",
+            train_window=200,
+            test_window=20,
+            use_news_archive=True,
+        )
+        assert calls["made"] == 1
+        assert calls["read"] > 0

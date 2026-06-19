@@ -6,10 +6,12 @@ import numpy as np
 import pandas as pd
 
 from src.prediction.baselines import (
+    HORIZON_SPECS,
     ARIMABaseline,
     BaselinePredictor,
     GARCHBaseline,
     MomentumBaseline,
+    horizon_to_interval,
     horizon_to_steps,
 )
 
@@ -58,3 +60,18 @@ class TestGARCH:
 def test_horizon_to_steps():
     assert horizon_to_steps("5d") == 5
     assert horizon_to_steps("1d") == 1
+
+
+def test_horizon_specs_intraday_vs_daily():
+    # "1h" is measured on hourly bars, distinct from the daily "1d"/"5d".
+    assert horizon_to_interval("1h") == "1h"
+    assert horizon_to_interval("1d") == "1d"
+    assert horizon_to_interval("5d") == "1d"
+    assert set(HORIZON_SPECS) == {"1h", "1d", "5d"}
+
+
+def test_horizon_to_interval_unknown_raises():
+    import pytest
+
+    with pytest.raises(ValueError):
+        horizon_to_interval("3d")

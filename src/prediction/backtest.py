@@ -152,41 +152,85 @@ def run_backtest(
     backend: str = "gbr",
     train_window: int = 252,
     test_window: int = 21,
+    *,
+    peers: list[str] | None = None,
+    vix: "pd.Series | None" = None,
+    use_news_archive: bool = False,
+    lookback_days: int = 7,
 ) -> BacktestResult:
     """
     End-to-end backtest on real price history (ingestion lazy-imported).
 
-    A point-in-time news archive is not available from the live APIs, so this
-    harness builds the price/graph feature matrix with neutral sentiment for the
-    historical window (``articles_by_time`` returns no articles). To backtest
-    the full sentiment-driven feature set, pass a precomputed feature matrix
-    directly to :func:`walk_forward`.
+    The price frame is fetched at the *interval* the horizon is measured on
+    (``"1h"`` uses hourly bars, ``"1d"``/``"5d"`` use daily), so ``"1h"`` is a
+    genuine intraday horizon rather than a duplicate of ``"1d"``.
 
-    NOTE: in this path three of the nine features are inert (``sentiment_agg``
-    and ``estimated_lag_hours`` are constant with no articles, ``sector_proximity``
-    is 0.0 with a single-ticker frame, and ``regime_label`` is -1 with no VIX
-    classifier), so the result benchmarks the technical features only.
+    Feature activation depends on the optional inputs:
+
+      - ``use_news_archive=True`` wires a point-in-time news reader
+        (``ingestion.news_archive``) into ``articles_by_time`` so ``sentiment_agg``
+        and ``estimated_lag_hours`` are live; otherwise they are neutral.
+      - ``peers`` builds a multi-ticker sector graph so ``sector_proximity`` is
+        live; otherwise it is 0.0.
+      - ``vix`` fits a :class:`RegimeClassifier` so ``regime_label`` is live;
+        otherwise it is -1.
     """
     from src.ingestion.price import fetch_prices  # lazy: network
-    from src.prediction.baselines import horizon_to_steps
+    from src.prediction.baselines import horizon_to_interval, horizon_to_steps
     from src.prediction.features import build_feature_matrix
 
-    logger.warning(
-        "run_backtest: sentiment_agg, estimated_lag_hours, sector_proximity and "
-        "regime_label are neutralized in this real-data path; results reflect the "
-        "technical features only. Use walk_forward with a precomputed feature "
-        "matrix to evaluate the full pipeline."
-    )
+    interval = horizon_to_interval(horizon)
+    prices = fetch_prices(ticker, start=start, end=end, interval=interval)
 
-    prices = fetch_prices(ticker, start=start, end=end)
-    sector_returns = prices[["log_return"]].rename(columns={"log_return": ticker})
+    # Sector returns: peers (live proximity) or just the target column (inert).
+    if peers:
+        from src.ingestion.price import fetch_returns_matrix
+
+        sector_returns = fetch_returns_matrix(
+            [ticker, *peers], start=start, end=end, interval=interval
+        )
+    else:
+        sector_returns = prices[["log_return"]].rename(columns={"log_return": ticker})
+
+    # Regime classifier from VIX (live regime label) when supplied.
+    regime_classifier = None
+    if vix is not None:
+        from src.prediction.regime import RegimeClassifier
+
+        regime_classifier = RegimeClassifier().fit(vix.to_numpy())
+
+    # Point-in-time news reader (live sentiment) when requested.
+    if use_news_archive:
+        from src.ingestion.news_archive import make_archive_reader
+
+        articles_by_time = make_archive_reader(ticker, lookback_days=lookback_days)
+    else:
+        articles_by_time = lambda _as_of: []  # noqa: E731 - tiny inline provider
+
+    inert = [
+        name
+        for name, active in [
+            ("sentiment_agg/estimated_lag_hours", use_news_archive),
+            ("sector_proximity", bool(peers)),
+            ("regime_label", vix is not None),
+        ]
+        if not active
+    ]
+    if inert:
+        logger.warning(
+            "run_backtest: the following features are neutralized in this call: %s. "
+            "Enable use_news_archive / peers / vix to activate them.",
+            ", ".join(inert),
+        )
 
     features = build_feature_matrix(
         ticker,
         prices.index,
-        articles_by_time=lambda _as_of: [],
+        articles_by_time=articles_by_time,
         prices=prices,
         sector_returns=sector_returns,
+        vix=vix,
+        regime_classifier=regime_classifier,
     ).dropna()
 
     steps = horizon_to_steps(horizon)
