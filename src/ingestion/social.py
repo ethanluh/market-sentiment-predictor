@@ -44,8 +44,8 @@ class SocialPost:
 
 def _reddit_client():  # type: ignore[no-untyped-def]
     """Build a read-only praw Reddit client from environment credentials."""
-    import praw  # lazy: optional dep + network
-
+    # Validate config before importing the optional dependency, so a missing-creds
+    # error is raised regardless of whether praw is installed.
     client_id = os.environ.get("REDDIT_CLIENT_ID")
     client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
     user_agent = os.environ.get("REDDIT_USER_AGENT", "market-sentiment-predictor")
@@ -53,6 +53,9 @@ def _reddit_client():  # type: ignore[no-untyped-def]
         raise RuntimeError(
             "REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET environment variables are required"
         )
+
+    import praw  # lazy: optional dep + network
+
     return praw.Reddit(
         client_id=client_id,
         client_secret=client_secret,
