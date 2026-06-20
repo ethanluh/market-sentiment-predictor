@@ -28,15 +28,13 @@ A production-grade pipeline that forecasts short-horizon stock returns from fina
 
 ---
 
-## Skills
+## Skills (5)
 
-`Python` · `Machine Learning` · `Quantitative Finance` · `Time-Series Forecasting`
-· `Natural Language Processing (NLP)` · `FinBERT / Transformers` · `PyTorch` ·
-`scikit-learn` · `Quantile Regression` · `Graph Theory / Network Models` ·
-`pandas` · `NumPy` · `SciPy` · `FastAPI` · `REST API Development` · `Docker` ·
-`Backtesting & Strategy Evaluation` · `Data Engineering / ETL` ·
-`API Integration (NewsAPI, SEC EDGAR, yfinance, Reddit)` · `pytest` ·
-`Type-Safe Python (mypy)` · `CI/CD (GitHub Actions)`
+1. Machine Learning
+2. Python
+3. Natural Language Processing (NLP)
+4. Quantitative Finance
+5. Time Series Forecasting
 
 ---
 
