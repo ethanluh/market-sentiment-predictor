@@ -22,39 +22,9 @@ to the graph-theoretic model of how information propagates into price.
 
 ## Project Description
 
-A production-grade pipeline that predicts short-horizon stock returns from the
-flow of financial news, filings, and social signals — not as a single number,
-but as a **calibrated probability range**.
+*(598 chars — fits Upwork's 600 limit; paste as one paragraph.)*
 
-Most retail "sentiment" tools collapse news into a buy/sell label. This system
-keeps sentiment continuous and models the harder questions: *how credible is the
-source, when will the information actually hit the price, and how uncertain is
-the move?* It runs as five sequential stages:
-
-1. **Multi-source ingestion** — market prices, news (NewsAPI / Alpha Vantage),
-   SEC EDGAR filings, Form 4 insider transactions, Reddit social signal, and
-   Google Trends, with a point-in-time news archive so backtests stay free of
-   look-ahead bias.
-2. **Financial sentiment (FinBERT)** — transformer-based sentiment scored on a
-   continuous [-1, 1] scale, combined across sources with **credibility
-   weighting** and **recency decay** rather than naive averaging.
-3. **Graph diffusion** — a heat-kernel model on a graph Laplacian over actor
-   categories (SEC/Corporate → Institutional → Press → Retail) estimates the
-   **lag before news impacts price**, plus a rolling-correlation sector graph
-   for cross-asset spillover.
-4. **Quantile return prediction** — predicts the **P10 / P50 / P90** of
-   log-return at 1-hour, 1-day, and 5-day horizons, conditioned on the current
-   VIX volatility regime (low/med/high). Quantiles are sorted to prevent
-   crossing, so the output is always a valid distribution.
-5. **Backtesting & serving** — a custom **walk-forward backtester** scores the
-   model against momentum, ARIMA, and EWMA-GARCH baselines using **pinball
-   loss** and interval-coverage metrics, and a **FastAPI** service exposes the
-   model over a `/predict` endpoint, containerized with Docker.
-
-The codebase is fully typed (enforced by `mypy`), tested with `pytest`, and gated
-by CI that runs formatting, type-checking, and the test suite on every change.
-Heavy dependencies (PyTorch / FinBERT) are lazily imported so the test/CI
-environment stays lightweight.
+A production-grade pipeline that forecasts short-horizon stock returns from financial news, filings, and social signals as a calibrated probability range, not a single number. Five stages: multi-source ingestion (news, SEC, insider, social, prices); continuous FinBERT sentiment with credibility weighting; a graph-diffusion model estimating when news hits price; and quantile regression predicting P10/P50/P90 returns at 1h/1d/5d by VIX regime. A walk-forward backtester scores it against momentum/ARIMA/GARCH baselines, served via a Dockerized FastAPI endpoint. Fully typed, tested, and CI-gated.
 
 ---
 
