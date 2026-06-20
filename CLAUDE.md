@@ -53,6 +53,7 @@ Shared helpers in `src/utils/` (`datetime_utils.py`, `safe.py`). `tests/` mirror
 - **Lazy heavy imports:** prediction/pipeline modules must not import `transformers`, `torch`, or `uvicorn` at module load — tests assert this via the `assert_no_heavy_imports` fixture (`tests/conftest.py`), so CI can run on `requirements-dev.txt` with those deps mocked.
 - `data/raw/` is append-only; never overwrite existing files there. `data/cache/` and `models/` are gitignored.
 - API keys via environment variables only (see `.env.example`); never hardcode.
+- Branch names follow `<type>/<short-description>`, where `<type>` is one of `docs`, `feature`, `bug`, `fix`, etc. (e.g. `feature/new-sign-in`).
 
 ## CI & Deploy
 
