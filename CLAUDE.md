@@ -54,6 +54,7 @@ Shared helpers in `src/utils/` (`datetime_utils.py`, `safe.py`). `tests/` mirror
 - `data/raw/` is append-only; never overwrite existing files there. `data/cache/` and `models/` are gitignored.
 - API keys via environment variables only (see `.env.example`); never hardcode.
 - Branch names follow `<type>/<short-description>`, where `<type>` is one of `docs`, `feature`, `bug`, `fix`, etc. (e.g. `feature/new-sign-in`).
+- Merge PRs with **rebase and merge** (keeps `main` history linear) — never squash or merge commits. See `CONTRIBUTING.md`.
 
 ## CI & Deploy
 
