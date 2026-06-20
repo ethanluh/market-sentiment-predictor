@@ -71,8 +71,18 @@ pytest tests/ -v
 ### Optional workflows
 
 ```bash
-# Build a point-in-time news archive (for sentiment-driven backtests)
+# Build a point-in-time news archive (for sentiment-driven backtests).
+# Default source is NewsAPI (~30 days history); Alpha Vantage reaches back to
+# ~2022 and can backfill in one run.
 python scripts/build_news_archive.py --ticker AAPL --start 2024-01-01
+python scripts/build_news_archive.py --ticker AAPL --source alphavantage \
+    --start 2022-01-01 --end 2024-01-01
+
+# Keep the archive fresh on a schedule (accumulate news over time). Wrapper for
+# crontab; reads keys from .env. Example: daily at 06:30 for two tickers:
+#   30 6 * * * TICKERS="AAPL MSFT" NEWS_SOURCE=alphavantage \
+#     /path/to/repo/scripts/cron_news_archive.sh >> /path/to/repo/news_cron.log 2>&1
+TICKERS="AAPL MSFT" NEWS_SOURCE=alphavantage scripts/cron_news_archive.sh
 
 # Calibrate diffusion edge probabilities/lags from historical events,
 # then feed them back via categories.load_calibrated_edges(...)
