@@ -11,15 +11,25 @@
 
 ## News
 
-Fetched via NewsAPI (`src/ingestion/news.py`); outlet → category mapping drives
-credibility weighting in `src/sentiment/aggregation.py`.
+Two interchangeable providers, both emitting the same `NewsArticle` type; the
+outlet → category mapping (`src/ingestion/news.py`) drives credibility weighting
+in `src/sentiment/aggregation.py`. Provider sentiment scores (when present) are
+ignored — every article is (re)scored by FinBERT for consistency.
 
-| Source | Credibility Weight | Notes |
+| Provider | Module | Free history | Notes |
+|---|---|---|---|
+| NewsAPI ✅ | `src/ingestion/news.py` | ~30 days | Default; `NEWS_API_KEY`. Long archives require accumulating over time. |
+| Alpha Vantage ✅ | `src/ingestion/alpha_vantage_news.py` | ~2022 → now | `NEWS_SENTIMENT`; ticker-native; `ALPHAVANTAGE_API_KEY`; can backfill history in one run. Free tier 25 req/day. |
+
+Select the provider when building the archive:
+`python scripts/build_news_archive.py --ticker AAPL --source alphavantage --start 2022-01-01`.
+
+| Outlet | Credibility Weight | Notes |
 |---|---|---|
 | Reuters / Bloomberg ✅ | 1.0 | Highest signal quality |
 | WSJ / FT ✅ | 0.9 | |
-| Benzinga ✅ | 0.7 | Mapped via NewsAPI |
-| Seeking Alpha ✅ | 0.5 | Mapped via NewsAPI |
+| Benzinga ✅ | 0.7 | Mapped from source name |
+| Seeking Alpha ✅ | 0.5 | Mapped from source name |
 | Financial blogs ✅ | informed-retail | Apply skepticism |
 
 Recency decay: `w(t) = credibility * exp(-lambda * delta_t_hours)`
