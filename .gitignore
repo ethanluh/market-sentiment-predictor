@@ -9,8 +9,7 @@ docs/project_plan.md
 data/cache/
 data/raw/*.csv
 data/raw/*.json
-data/raw/**/*.csv
-data/raw/**/*.json
+data/raw/*/
 data/processed/
 
 # Python
