@@ -2,11 +2,11 @@
 
 ## Project Title
 
-**News-Driven Stock Forecasting Engine — Financial NLP + Graph Diffusion + Quantile Regression**
+**News-Driven Stock Return Forecasting with NLP & Graph Models** *(60 chars)*
 
-*(Alternates, depending on the niche you're targeting:)*
-- *Quantitative Equity Prediction Pipeline (FinBERT • Graph Models • Backtesting)*
-- *End-to-End ML System for News-Based Stock Return Forecasting*
+*(Alternates, all under 70 chars:)*
+- *Quantitative Stock Forecasting: FinBERT + Graph + Quantiles* (59)
+- *News-Driven Stock Return Prediction (NLP + Graph + Quantiles)* (61)
 
 ---
 
