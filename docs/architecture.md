@@ -23,12 +23,13 @@
 
 4. **Sentiment Analysis**
   - Applies NLP models (e.g., FinBERT) to each indicator.
-  - Labels each indicator as:
-    - Very Good
-    - Good
-    - Neutral
-    - Bad
-    - Very Bad
+  - Produces a **continuous** score in `[-1, 1]` per item
+    (`score = p_positive - p_negative`), where `-1` is maximally bearish, `+1`
+    maximally bullish, and `0` neutral.
+  - Scores stay continuous all the way to the final prediction step — they are
+    **never discretized into buckets** beforehand, so downstream aggregation
+    (credibility weighting + recency decay) and the quantile model see the full
+    signal.
 
 5. **Graph Diffusion Modeling**
   - Constructs a sector correlation graph.
@@ -40,7 +41,7 @@
 ## Key Design Choices
 
 - **Indicators**: Chosen for their relevance to price movement and news sensitivity. The set can be expanded as needed.
-- **Sentiment Categories**: Five-point scale provides granularity for downstream modeling.
+- **Continuous sentiment**: Scores are kept as floats in `[-1, 1]` (not bucketed) so downstream weighting and the quantile model retain the full signal.
 - **Graph Theory**: Captures both direct and indirect effects of sentiment, leveraging sector and peer relationships.
 
 ## Example Flow
@@ -48,7 +49,7 @@
 1. User selects TSLA.
 2. System ingests news, filings, and social posts.
 3. Extracts indicators: e.g., “Q1 earnings,” “autopilot investigation,” “battery tech.”
-4. Sentiment model labels “Q1 earnings” as Good, “autopilot investigation” as Bad, etc.
+4. Sentiment model scores “Q1 earnings” at +0.6, “autopilot investigation” at −0.4, etc. (continuous, in [-1, 1]).
 5. Graph model diffuses these sentiments across the auto sector.
 6. Quantile regression predicts TSLA’s return distribution for the next day.
 

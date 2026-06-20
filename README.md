@@ -4,6 +4,11 @@
 
 A news-driven stock price prediction pipeline combining financial NLP, graph-theoretic information diffusion modeling, and quantile regression over returns.
 
+> **Disclaimer:** This software is for research and educational purposes only. Its
+> outputs are statistical estimates, **not investment advice**, and come with no
+> warranty. Nothing here is a recommendation to buy or sell any security. Do your
+> own research and consult a licensed professional before making financial decisions.
+
 ## Pipeline Overview
 
 ```
