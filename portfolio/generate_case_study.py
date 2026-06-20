@@ -26,7 +26,7 @@ See portfolio/README.md for how to produce the JSON from a real train+backtest.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 import matplotlib
@@ -95,12 +95,23 @@ def _load(path: Path):
     return None
 
 
+def _only_known(cls: type, raw: dict) -> dict:
+    """Keep only keys ``cls`` declares, so a full dumped result loads cleanly.
+
+    The real ``BacktestResult`` carries extra fields (``directional_hit_rate``,
+    ``pnl_curve``) we don't visualise; dropping them here makes the README's
+    "only these keys are read" literally true instead of a ``TypeError``.
+    """
+    allowed = {f.name for f in fields(cls)}
+    return {k: v for k, v in raw.items() if k in allowed}
+
+
 def load_prediction() -> PredictionSpec:
     raw = _load(DATA_DIR / "prediction.json")
     if raw is None:
         return PredictionSpec()
     raw.setdefault("illustrative", False)
-    return PredictionSpec(**raw)
+    return PredictionSpec(**_only_known(PredictionSpec, raw))
 
 
 def load_backtest() -> BacktestSpec:
@@ -108,7 +119,7 @@ def load_backtest() -> BacktestSpec:
     if raw is None:
         return BacktestSpec()
     raw.setdefault("illustrative", False)
-    return BacktestSpec(**raw)
+    return BacktestSpec(**_only_known(BacktestSpec, raw))
 
 
 def _mean_pinball(d: dict[str, float]) -> float:
@@ -308,18 +319,31 @@ def build_figure() -> plt.Figure:
     fig = plt.figure(figsize=(12, 9), dpi=150)
     fig.patch.set_facecolor("white")
     gs = fig.add_gridspec(
-        2, 2, height_ratios=[1.0, 1.25], hspace=0.34, wspace=0.22,
-        left=0.06, right=0.95, top=0.86, bottom=0.10,
+        2,
+        2,
+        height_ratios=[1.0, 1.25],
+        hspace=0.34,
+        wspace=0.22,
+        left=0.06,
+        right=0.95,
+        top=0.86,
+        bottom=0.10,
     )
 
     fig.text(
-        0.06, 0.955, "market-sentiment-predictor",
-        fontsize=20, fontweight="bold", color=INK,
+        0.06,
+        0.955,
+        "market-sentiment-predictor",
+        fontsize=20,
+        fontweight="bold",
+        color=INK,
     )
     fig.text(
-        0.06, 0.915,
+        0.06,
+        0.915,
         "News-driven equity forecasting: financial NLP + graph-theoretic information diffusion + quantile regression over returns",
-        fontsize=10.5, color=MUTED,
+        fontsize=10.5,
+        color=MUTED,
     )
 
     ax_arch = fig.add_subplot(gs[0, :])
