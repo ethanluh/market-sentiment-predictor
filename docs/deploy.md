@@ -35,15 +35,18 @@ Provide credentials via `--env-file .env` (see `.env.example`):
 - `NEWS_API_KEY` — news ingestion
 - `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USER_AGENT` — social
 - `SEC_EDGAR_EMAIL` — SEC EDGAR User-Agent
-- `MODEL_PATH` — path to a trained model artifact for `/predict` (see below)
+- `MODEL_PATH` — **required**: path to a trained model artifact for `/predict` (see below)
+- `LOG_LEVEL` — serving log level (default `INFO`)
 
 Missing optional source credentials degrade gracefully (that source is skipped);
 price data is required.
 
 ### Serving a trained model
 
-`/predict` reads `MODEL_PATH`; if unset it falls back to the unfitted default and
-returns no predictions. Train an artifact and point the container at it:
+The serving API **requires** `MODEL_PATH`: it loads and validates the artifact
+once at startup and **refuses to start** (fails fast) if `MODEL_PATH` is unset or
+unloadable, instead of silently returning empty predictions on the first request.
+Train an artifact and point the container at it:
 
 ```bash
 python scripts/train_model.py --ticker AAPL --start 2022-01-01 --out models/aapl.joblib
@@ -56,10 +59,11 @@ docker run --rm -p 8000:8000 --env-file .env \
 
 ## Notes
 
-- **First call latency**: FinBERT weights download from Hugging Face on the
-  first request. To bake them in, extend the Dockerfile to pre-download the
-  model during build, or mount a Hugging Face cache volume.
-- **Trained model**: without `MODEL_PATH` the API serves the unfitted default
-  (empty predictions). Set `MODEL_PATH` to a trained artifact (see *Serving a
-  trained model* above) to get real forecasts.
-- The container runs as a non-root user and exposes a `/health` healthcheck.
+- **First call latency**: FinBERT weights are **pre-downloaded at build time**
+  (baked into the image), so the first `/predict` no longer pays the ~30-60s
+  Hugging Face download. (The `src.pipeline.run` CLI, run outside the image,
+  still downloads on first use.)
+- **Trained model**: the API requires `MODEL_PATH` and fails fast at startup if
+  it is missing/unloadable (see *Serving a trained model* above).
+- **Health**: `GET /health` returns `{"status": "ok", "model_loaded": <bool>}`;
+  the container runs as a non-root user and ships a Docker healthcheck.

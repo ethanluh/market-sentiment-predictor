@@ -20,6 +20,14 @@ COPY src/ ./src/
 RUN useradd --create-home --uid 10001 appuser
 USER appuser
 
+# Pre-download FinBERT at build time so it is baked into the image; otherwise the
+# weights download from Hugging Face on the first /predict call (~30-60s latency).
+# Runs as appuser so the cache lands in a home dir the runtime can read.
+ENV HF_HOME=/home/appuser/.cache/huggingface
+RUN python -c "from transformers import BertForSequenceClassification, BertTokenizer; \
+    BertTokenizer.from_pretrained('ProsusAI/finbert'); \
+    BertForSequenceClassification.from_pretrained('ProsusAI/finbert')"
+
 EXPOSE 8000
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \

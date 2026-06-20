@@ -95,6 +95,7 @@ def _ingest(
     from src.graph.categories import NODE_SEC_CORP
     from src.ingestion.news import fetch_news, to_scored_article
     from src.ingestion.price import fetch_prices, fetch_returns_matrix
+    from src.utils.retry import retry_call
 
     since = as_of - timedelta(days=lookback_days)
     # Intraday history is short-lived on Yahoo Finance; use a tighter price window
@@ -102,9 +103,11 @@ def _ingest(
     price_days = 60 if interval not in ("1d", "1wk", "1mo") else 180
     price_start = (as_of - timedelta(days=price_days)).date().isoformat()
 
-    # Prices are essential — let a failure propagate.
-    prices = fetch_prices(ticker, start=price_start, interval=interval)
-    sector_returns = fetch_returns_matrix([ticker], start=price_start, interval=interval)
+    # Prices are essential — retry transient failures, then let it propagate.
+    prices = retry_call(lambda: fetch_prices(ticker, start=price_start, interval=interval))
+    sector_returns = retry_call(
+        lambda: fetch_returns_matrix([ticker], start=price_start, interval=interval)
+    )
 
     texts: list[str] = []
     meta: list[ScoredArticle] = []
@@ -234,13 +237,20 @@ def run(
     horizons: list[str] | None = None,
     model_path: str | None = None,
     as_of: datetime | None = None,
+    model: object | None = None,
 ) -> PredictionResult:
-    """Run the full pipeline for ``ticker`` and return a prediction result."""
+    """Run the full pipeline for ``ticker`` and return a prediction result.
+
+    Pass an already-loaded ``model`` (e.g. one the serving layer loaded once at
+    startup) to skip the per-call artifact load; otherwise the model is loaded
+    from ``model_path`` (or an unfitted default when that is ``None``).
+    """
     from src.prediction.baselines import horizon_to_interval
 
     horizons = horizons or [horizon]
     as_of = as_of or datetime.now(timezone.utc)
-    model = _load_model(model_path)
+    if model is None:
+        model = _load_model(model_path)
 
     # Group horizons by the price-bar interval they are measured on, so "1h"
     # is predicted from hourly bars and "1d"/"5d" from daily bars.
