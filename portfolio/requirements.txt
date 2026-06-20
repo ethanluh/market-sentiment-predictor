@@ -1,0 +1,4 @@
+# Tooling for portfolio/generate_case_study.py only (NOT a package runtime dep).
+# Kept separate from requirements*.txt so CI / the lightweight dev install stay unchanged.
+matplotlib>=3.8
+numpy>=1.26.0
