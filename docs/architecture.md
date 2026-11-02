@@ -10,6 +10,8 @@
     - News articles
     - Social media posts
     - Financial filings
+    - Insider transactions (SEC Form 4)
+    - Search interest (Google Trends)
     - General company information
 
 3. **Indicator Extraction**
@@ -53,8 +55,6 @@
 5. Graph model diffuses these sentiments across the auto sector.
 6. Quantile regression predicts TSLA’s return distribution for the next day.
 
-# Architecture
-
 ## Data Flow
 
 ```
@@ -62,8 +62,11 @@ External APIs
   └── src/ingestion/
         ├── price.py        → OHLCV → UTC log-returns (yfinance)
         ├── news.py         → articles + source→category mapping (NewsAPI)
+        ├── alpha_vantage_news.py → alternative news source, deeper free history (Alpha Vantage)
         ├── filings.py      → SEC 8-K, 10-Q + real filing dates (sec-edgar-downloader)
+        ├── form4.py        → insider transactions as signed shares (SEC Form 4)
         ├── social.py       → Reddit posts (praw)
+        ├── trends.py       → search-interest series (Google Trends, pytrends)
         ├── news_archive.py → point-in-time per-day news store + leakage-safe reader
         └── cache.py        → JSON API cache
 
@@ -83,14 +86,20 @@ src/prediction/
   ├── baselines.py         → momentum, ARIMA, EWMA-GARCH + horizon/interval specs
   └── backtest.py          → custom walk-forward harness; model-vs-baseline pinball
 
+src/utils/
+  ├── datetime_utils.py    → UTC normalisation
+  ├── retry.py             → bounded retry-with-backoff for transient network errors
+  └── safe.py              → safe_fetch: degrade an optional source to a neutral feature
+
 src/pipeline/
   ├── run.py               → in-process sequential flow wiring all stages (+ CLI)
   └── api.py               → FastAPI POST /predict, GET /health
 
 scripts/
   ├── train_model.py       → fit + persist a QuantileReturnModel artifact
-  ├── build_news_archive.py→ populate the point-in-time news archive
-  └── calibrate_graph.py   → estimate edge prob/lag → calibrated_edges.json
+  ├── build_news_archive.py → populate the point-in-time news archive
+  ├── calibrate_graph.py   → estimate edge prob/lag → calibrated_edges.json
+  └── cron_news_archive.sh → scheduled wrapper around build_news_archive.py
 ```
 
 ## Storage
@@ -100,13 +109,13 @@ rows are planned, not yet implemented.
 
 | Layer                  | Store (current)                          | Status |
 |---                     |---                                       |---     |
-| API responses          | Local JSON cache (`data/cache/`)         | ✅ implemented |
-| Point-in-time news     | Per-day JSON (`data/raw/news/<TICKER>/`) | ✅ implemented |
-| News sentiment scores  | JSON (`data/processed/news_scores/`)     | ✅ implemented |
-| Model artifacts        | `joblib` files (`models/`)               | ✅ implemented |
-| Raw price/news at scale | TimescaleDB hypertable                  | 🔜 planned |
-| Embeddings             | Postgres (pgvector)                      | 🔜 planned |
-| Experiments            | MLflow                                   | 🔜 planned |
+| API responses          | Local JSON cache (`data/cache/`)         | implemented |
+| Point-in-time news     | Per-day JSON (`data/raw/news/<TICKER>/`) | implemented |
+| News sentiment scores  | JSON (`data/processed/news_scores/`)     | implemented |
+| Model artifacts        | `joblib` files (`models/`)               | implemented |
+| Raw price/news at scale | TimescaleDB hypertable                  | planned |
+| Embeddings             | Postgres (pgvector)                      | planned |
+| Experiments            | MLflow                                   | planned |
 
 ## Serving
 

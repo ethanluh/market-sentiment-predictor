@@ -98,12 +98,12 @@ python scripts/calibrate_graph.py --events-file data/raw/events.csv
 
 ```
 src/
-  ingestion/      # price/volume, news, SEC filings, social, point-in-time news archive
+  ingestion/      # price/volume, news (NewsAPI, Alpha Vantage), SEC filings + Form 4 insider flow, social, Google Trends, point-in-time news archive
   sentiment/      # FinBERT inference, credibility/recency aggregation
   graph/          # diffusion model, sector graph, node categories + calibration loader
   prediction/     # features, regime, quantile model, baselines, walk-forward backtest
   pipeline/       # in-process orchestration flow (run) + FastAPI app (api)
-  utils/          # shared datetime helpers
+  utils/          # datetime helpers, retry-with-backoff, safe_fetch graceful degrade
 docs/             # architecture, graph model, data sources, deploy, testing the thesis
 tests/            # mirrors src/
 scripts/          # train_model, build_news_archive, calibrate_graph
@@ -124,7 +124,7 @@ models/           # trained model artifacts (gitignored)
 
 **Regime conditioning** — VIX is discretized into low/medium/high regimes (k-means, k=3) and used as a conditioning variable, since sentiment predictiveness varies significantly with volatility.
 
-**Multi-source ingest** — The pipeline fans in news (financial press), Reddit (retail), and SEC filings. News + social are scored by FinBERT; a recent filing forces the diffusion origin to `sec_corp` (the fastest edge). Each supplementary source degrades gracefully if unavailable.
+**Multi-source ingest** — The pipeline fans in news (financial press), Reddit (retail), SEC filings, plus insider flow (Form 4) and Google Trends search interest as price-model features. These two are opt-in at training time (`--use-insider-flow`, `--use-trends`); the live pipeline always tries them and degrades to neutral features on failure. News + social are scored by FinBERT; a recent filing forces the diffusion origin to `sec_corp` (the fastest edge). Each supplementary source degrades gracefully if unavailable.
 
 **Baseline benchmarking** — The walk-forward backtest scores the quantile model against momentum / ARIMA / EWMA-GARCH baselines (pinball loss), so reported performance is always relative.
 

@@ -46,6 +46,13 @@ where:
 
 Computed in `src/graph/diffusion.py::estimate_lag(origin_node, alpha)`.
 
+**Known limitation.** Edges point downstream (SEC/Corp → Institutional → Press → Informed → Uninformed Retail), so
+the institutional target is *upstream* of the press and retail nodes. From those origins the signal never reaches
+it, the peak concentration is zero, and `estimate_lag` returns its `t_max` fallback (48 h). With the default edges
+and α from 0.1 to 1.0: `sec_corp` gives 0.29 to 2.02 h, `institutional` gives 0 h, and `fin_press`,
+`informed_retail` and `uninformed_retail` always give 48 h. The `estimated_lag_hours` feature is therefore close to
+constant for news that originates in the press or retail.
+
 ## Sector Correlation Graph
 
 Secondary graph G_sector = (V_sector, E_sector):

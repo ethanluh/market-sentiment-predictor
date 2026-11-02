@@ -35,8 +35,10 @@ Provide credentials via `--env-file .env` (see `.env.example`):
 - `NEWS_API_KEY` — news ingestion
 - `REDDIT_CLIENT_ID` / `REDDIT_CLIENT_SECRET` / `REDDIT_USER_AGENT` — social
 - `SEC_EDGAR_EMAIL` — SEC EDGAR User-Agent
+- `ALPHAVANTAGE_API_KEY` — only for `scripts/build_news_archive.py --source alphavantage` (and `scripts/cron_news_archive.sh` with `NEWS_SOURCE=alphavantage`); the serving API does not read it
 - `MODEL_PATH` — **required**: path to a trained model artifact for `/predict` (see below)
 - `LOG_LEVEL` — serving log level (default `INFO`)
+- `HF_HOME` — set in the image to the baked-in FinBERT cache (`/home/appuser/.cache/huggingface`); override only if you mount your own
 
 Missing optional source credentials degrade gracefully (that source is skipped);
 price data is required.
