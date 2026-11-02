@@ -70,6 +70,9 @@ python -m src.prediction.backtest --ticker AAPL --start 2023-01-01 --end 2024-01
 # tests); synthetic data only for now. signal=0 is a no-edge control.
 python -m src.eval.run --synthetic --signal 0.5 --horizon 1d --ablation
 
+# Paper trading against Alpaca (dry run by default; see docs/trading.md)
+python -m src.trading.run --forecasts data/trading/forecasts.json
+
 # Serve the prediction API
 python -m src.pipeline.api          # POST /predict, GET /health on :8000
 
