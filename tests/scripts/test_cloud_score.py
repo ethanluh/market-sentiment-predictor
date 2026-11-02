@@ -40,9 +40,14 @@ case "$args" in
     else echo "WARNING: The following filter keys were not present in any resource : name" >&2; fi ;;
   "compute instances describe"*)
     n=$(( $(cat "$FAKE_STATE/describes" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_STATE/describes"
-    [ -z "${FAKE_DESCRIBE_FAILS:-}" ] || [ "$n" -gt "$FAKE_DESCRIBE_FAILS" ] || exit 1
+    if [ -n "${FAKE_DESCRIBE_NOTFOUND:-}" ]; then
+      echo "ERROR: (gcloud.compute.instances.describe) Could not fetch resource: The resource 'projects/p/zones/z/instances/vm' was not found" >&2; exit 1
+    fi
+    [ -z "${FAKE_DESCRIBE_FAILS:-}" ] || [ "$n" -gt "$FAKE_DESCRIBE_FAILS" ] || { echo "ERROR: transient backend error" >&2; exit 1; }
     [ -z "${FAKE_DONE_AFTER:-}" ] || [ "$n" -lt "$FAKE_DONE_AFTER" ] || touch "$FAKE_STATE/done"
     [ -f "$FAKE_STATE/vm" ] && echo "${FAKE_VM_STATUS:-RUNNING}" || echo GONE ;;
+  "compute instances get-serial-port-output"*)
+    echo "[boot] kernel started"; echo "startup-script: ${FAKE_SERIAL_NOTE:-running}" ;;
   "storage buckets create"*) touch "$FAKE_STATE/bucket" ;;
   "storage cp /"*)
     mkdir -p "$FAKE_STATE/uploads"
@@ -695,3 +700,32 @@ def test_the_real_repository_passes_its_own_upload_guards(env: dict) -> None:
     ]
     p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     assert p.returncode == 0, p.stderr
+
+
+# ---- diagnostics when the VM misbehaves ---------------------------------------------------------
+
+
+def test_a_vanished_vm_is_reported_at_once_with_its_serial_console(env: dict) -> None:
+    env["FAKE_NEVER_DONE"] = "1"
+    env["FAKE_DESCRIBE_NOTFOUND"] = "1"
+    env["FAKE_SERIAL_NOTE"] = "nvidia-smi: no devices found"
+    p = run(env, "--run")
+    assert p.returncode != 0
+    assert "no longer exists and wrote no result" in p.stderr
+    assert "nvidia-smi: no devices found" in p.stderr and "was not found" in p.stderr
+    assert len([c for c in calls(env) if "instances describe" in c]) == 1  # not retried five times
+    assert not (Path(env["T_STATE"]) / "vm").exists()  # still cleaned up
+
+
+def test_persistent_describe_failures_include_the_error_text_and_serial_output(env: dict) -> None:
+    env["FAKE_NEVER_DONE"] = "1"
+    env["FAKE_DESCRIBE_FAILS"] = "999"
+    p = run(env, "--run")
+    assert p.returncode != 0 and "five times in a row" in p.stderr
+    assert "transient backend error" in p.stderr and "startup-script: running" in p.stderr
+
+
+def test_a_failed_vm_job_shows_the_serial_console_too(env: dict) -> None:
+    env["FAKE_FAILED"] = "1"
+    p = run(env, "--run")
+    assert p.returncode != 0 and "the VM job failed" in p.stderr and "serial console" in p.stderr

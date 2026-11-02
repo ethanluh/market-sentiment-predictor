@@ -297,28 +297,56 @@ fi
 # --- wait for the VM ----------------------------------------------------------------------------
 DEADLINE=$(( $(date +%s) + MAX_HOURS * 3600 + 900 ))
 DESCRIBE_FAILS=0
+# Best-effort: keep the VM's serial console (boot and startup-script output) so that if the VM
+# vanishes we can still say why. Diagnostics only; a failure here never affects the run.
+capture_serial() {
+  gcloud compute instances get-serial-port-output "$VM" --project="$PROJECT" --zone="$ZONE" --port=1 \
+    >"$TMP/serial.new" 2>/dev/null && mv "$TMP/serial.new" "$TMP/serial.log" || true
+}
+show_diagnostics() {
+  KEEP_TMP=1
+  if [ -s "$TMP/serial.log" ]; then
+    echo "--- last lines of the VM serial console ($TMP/serial.log):" >&2
+    tail -n 40 "$TMP/serial.log" >&2
+  else
+    echo "(no serial console output was captured)" >&2
+  fi
+  [ -s "$TMP/describe.err" ] && { echo "--- last gcloud describe error:" >&2; cat "$TMP/describe.err" >&2; }
+  return 0
+}
 log "waiting for the VM job (poll every ${POLL_SECONDS}s, hard stop in about $MAX_HOURS h)"
 while :; do
   if gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1; then break; fi
   if gcloud storage ls "gs://$BUCKET/status/FAILED" >/dev/null 2>&1; then
     gcloud storage cp "gs://$BUCKET/score.log" "$TMP/score.log" >/dev/null 2>&1 || true
-    KEEP_TMP=1
+    show_diagnostics
     die "the VM job failed; see $TMP/score.log"
   fi
-  [ "$(date +%s)" -lt "$DEADLINE" ] || die "timed out waiting for the VM job"
-  if STATUS="$(gcloud compute instances describe "$VM" --project="$PROJECT" --zone="$ZONE" --format='value(status)' 2>/dev/null)"; then
+  [ "$(date +%s)" -lt "$DEADLINE" ] || { show_diagnostics; die "timed out waiting for the VM job"; }
+  capture_serial
+  if STATUS="$(gcloud compute instances describe "$VM" --project="$PROJECT" --zone="$ZONE" --format='value(status)' 2>"$TMP/describe.err")"; then
     DESCRIBE_FAILS=0
     case "$STATUS" in
       PROVISIONING|STAGING|RUNNING) ;;
       TERMINATED|STOPPING|SUSPENDED|REPAIRING|"")
         # The VM may have just finished and shut itself down: look for the marker once more.
         gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1 && continue
+        show_diagnostics
         die "the VM is ${STATUS:-GONE} and no result was uploaded (preempted or deleted)" ;;
-      *) die "the VM is in unexpected state $STATUS" ;;
+      *) show_diagnostics; die "the VM is in unexpected state $STATUS" ;;
     esac
   else
+    # "Not found" is not transient: the VM is gone (spot preemption, or it deleted itself) and
+    # wrote no result, so waiting longer would only hide it.
+    if grep -Eiq 'was not found|notFound|not found' "$TMP/describe.err"; then
+      show_diagnostics
+      die "the VM no longer exists and wrote no result (spot preemption, or it deleted itself)"
+    fi
     DESCRIBE_FAILS=$((DESCRIBE_FAILS + 1))
-    [ "$DESCRIBE_FAILS" -lt 5 ] || die "could not read the VM status five times in a row"
+    if [ "$DESCRIBE_FAILS" -ge 5 ]; then
+      show_diagnostics
+      die "could not read the VM status five times in a row"
+    fi
   fi
   sleep "$POLL_SECONDS"
 done
