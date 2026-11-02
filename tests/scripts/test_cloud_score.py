@@ -547,9 +547,9 @@ def test_filled_in_templates_block_the_upload_in_any_spelling(env: dict, line: s
 @pytest.mark.parametrize(
     "content",
     [
-        "-----BEGIN RSA PRIVATE KEY-----\nabc\n",
-        "k = 'AKIAABCDEFGHIJKLMNOP'\n",
-        "id = 'PKABCDEFGHIJ0123456789'\n",
+        "-----BEGIN RSA PRIVATE " "KEY-----\nabc\n",
+        "k = 'AKIA" "ABCDEFGHIJKLMNOP'\n",
+        "id = 'PK" "ABCDEFGHIJ0123456789'\n",
     ],
 )
 def test_credential_shaped_text_in_any_tracked_file_blocks_the_upload(
@@ -581,8 +581,8 @@ def test_a_multiline_tickers_value_becomes_one_clean_line(env: dict) -> None:
 @pytest.mark.parametrize(
     "content",
     [
-        "id = 'PKABCDEFGHIJ0123456789ABCD'\n",
-        "id = 'AKABCDEFGHIJ0123456789ABCD'\n",
+        "id = 'PK" "ABCDEFGHIJ0123456789ABCD'\n",
+        "id = 'AK" "ABCDEFGHIJ0123456789ABCD'\n",
     ],  # 26-character broker key ids
 )
 def test_longer_broker_key_ids_are_caught_too(env: dict, content: str) -> None:
@@ -657,3 +657,41 @@ def test_gcloud_warnings_on_an_empty_listing_are_not_a_leak(env: dict) -> None:
     p = run(env, "--run")
     assert p.returncode == 0, p.stderr
     assert "still exists" not in p.stderr and "no billable resources remain" in p.stdout
+
+
+def test_a_credential_early_in_a_large_archive_is_never_missed(env: dict) -> None:
+    """`tar | grep -q` under pipefail passes or fails depending on timing and archive size."""
+    filler = "# filler line that compresses poorly: " + "x1y2z3" * 20 + "\n"
+    big = (
+        "-----BEGIN RSA PRIVATE " "KEY-----\n"
+    ) + filler * 40_000  # secret first, megabytes after
+    _commit(Path(env["T_REPO"]), "src/big.py", big)
+    for _ in range(5):
+        p = run(env)
+        assert p.returncode != 0 and "shaped like a credential" in p.stderr
+
+
+def test_the_real_repository_passes_its_own_upload_guards(env: dict) -> None:
+    """The scan must not flag this repo's own tracked files (test fixtures included)."""
+    real = Path(__file__).resolve().parents[2]
+    clean = subprocess.run(
+        ["git", "-C", str(real), "diff", "--quiet", "HEAD", "--", "scripts", "src"]
+    )
+    if clean.returncode != 0:
+        pytest.skip(
+            "scripts/ or src/ has uncommitted changes; the real repo is checked at HEAD only"
+        )
+    cmd = [
+        "bash",
+        str(SCRIPT),
+        "--project",
+        PROJECT,
+        "--repo",
+        str(real),
+        "--data-dir",
+        env["T_DATA"],
+        "--python",
+        env["T_PY"],
+    ]
+    p = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+    assert p.returncode == 0, p.stderr

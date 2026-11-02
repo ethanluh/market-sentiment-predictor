@@ -186,12 +186,16 @@ if grep -Eiq "$SECRET_NAMES" <<<"$CODE_FILES"; then
   die "the code archive contains a secret-looking file; refusing to upload"
 fi
 # Content check on everything tracked: private-key headers and well-known key shapes.
-if tar -xzOf "$TMP/code.tgz" 2>/dev/null | grep -aEq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|\b(PK|AK)[A-Z0-9]{18,32}\b'; then
+# Never `tar | grep -q`: with pipefail, grep exiting on its first match kills tar with SIGPIPE and the
+# whole pipeline reads as "no match", so the scan would pass or fail depending on timing.
+tar -xzOf "$TMP/code.tgz" >"$TMP/code.content" 2>/dev/null || die "could not read the code archive"
+if grep -aEq -- '-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|ghp_[0-9A-Za-z]{36}|\b(PK|AK)[A-Z0-9]{18,32}\b' "$TMP/code.content"; then
   die "the code archive contains text shaped like a credential; refusing to upload"
 fi
 while IFS= read -r template; do
   [ -n "$template" ] || continue
-  if tar -xzOf "$TMP/code.tgz" "$template" | grep -Eiq '^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]*(KEY|SECRET|TOKEN|PASSW(OR)?D)[A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]#]'; then
+  tar -xzOf "$TMP/code.tgz" "$template" >"$TMP/template.content" || die "could not read $template"
+  if grep -Eiq '^[[:space:]]*(export[[:space:]]+)?[A-Za-z0-9_]*(KEY|SECRET|TOKEN|PASSW(OR)?D)[A-Za-z0-9_]*[[:space:]]*=[[:space:]]*[^[:space:]#]' "$TMP/template.content"; then
     die "$template has a non-empty secret-looking value; refusing to upload"
   fi
 done < <(tar -tzf "$TMP/code.tgz" | grep -E '(^|/)\.env\.(example|sample|template)$' || true)
@@ -270,7 +274,7 @@ for ZONE in "${ZONE_ARR[@]}"; do
   if "${CREATE[@]}" --zone="$ZONE" 2>"$TMP/create.err"; then CREATED_ZONE="$ZONE"; break; fi
   cat "$TMP/create.err" >&2
   # Google wraps this message across lines, so normalise whitespace before matching.
-  if tr '\n' ' ' <"$TMP/create.err" | grep -Eq 'ZONE_RESOURCE_POOL_EXHAUSTED|resource_availability|does not have +enough +resources'; then
+  if grep -Eq 'ZONE_RESOURCE_POOL_EXHAUSTED|resource_availability|does not have +enough +resources' < <(tr '\n' ' ' <"$TMP/create.err"); then
     log "no T4 capacity in $ZONE; trying the next zone"
     continue
   fi
