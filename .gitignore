@@ -47,3 +47,6 @@ mlartifacts/
 # OS
 .DS_Store
 Thumbs.db
+
+# Trading ledger and kill switch (local runtime state)
+data/trading/
