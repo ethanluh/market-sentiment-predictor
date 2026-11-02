@@ -15,6 +15,7 @@ backtest does not re-run the model on every fold.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -23,8 +24,10 @@ from src.ingestion.news import NewsArticle, to_scored_article
 from src.sentiment.aggregation import ScoredArticle
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-ARCHIVE_ROOT = _REPO_ROOT / "data" / "raw" / "news"
-SCORE_CACHE_ROOT = _REPO_ROOT / "data" / "processed" / "news_scores"
+# ``MSP_DATA_ROOT`` relocates the data tree (another worktree, or a cloud box holding a copy).
+_DATA_ROOT = Path(os.environ.get("MSP_DATA_ROOT", _REPO_ROOT / "data"))
+ARCHIVE_ROOT = _DATA_ROOT / "raw" / "news"
+SCORE_CACHE_ROOT = _DATA_ROOT / "processed" / "news_scores"
 
 
 def archive_path(ticker: str, day: datetime) -> Path:
@@ -79,8 +82,8 @@ def read_all(ticker: str) -> list[NewsArticle]:
             try:
                 with path.open("r", encoding="utf-8") as fh:
                     payload = json.load(fh)
-            except (OSError, json.JSONDecodeError):
-                continue
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"corrupt news archive file {path}") from exc
             articles.extend(_article_from_dict(d) for d in payload)
     articles.sort(key=lambda a: a.published_at)
     return articles
@@ -96,16 +99,27 @@ def _load_score_cache(ticker: str) -> dict[str, float]:
         return {}
     try:
         with path.open("r", encoding="utf-8") as fh:
-            return {str(k): float(v) for k, v in json.load(fh).items()}
-    except (OSError, json.JSONDecodeError):
-        return {}
+            cache = {str(k): float(v) for k, v in json.load(fh).items()}
+    except (ValueError, TypeError, AttributeError) as exc:  # includes JSONDecodeError
+        raise ValueError(f"corrupt score cache {path}") from exc
+    bad = [u for u, s in cache.items() if not -1.0 <= s <= 1.0]  # NaN fails this comparison too
+    if bad:
+        raise ValueError(
+            f"score cache {path} holds {len(bad)} scores outside [-1, 1], e.g. {bad[0]}"
+        )
+    return cache
 
 
 def _save_score_cache(ticker: str, cache: dict[str, float]) -> None:
+    """Write atomically (temp file then rename) so an interrupted run never leaves a torn cache."""
     path = _score_cache_path(ticker)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as fh:
+    tmp = path.with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
         json.dump(cache, fh, indent=2)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, path)
 
 
 def make_archive_reader(
