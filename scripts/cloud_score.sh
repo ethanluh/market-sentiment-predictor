@@ -117,13 +117,15 @@ cleanup() {
       gcloud storage rm -r "gs://$BUCKET" --project="$PROJECT" || true
     fi
     if [ "$VM_CREATED" = 1 ] || [ "$BUCKET_CREATED" = 1 ]; then
-      if ! VMS="$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM" --format='value(name)' 2>&1)"; then
-        echo "error: could not list VMs to confirm $VM is gone: $VMS" >&2; leftover=1
+      # stdout only: gcloud prints warnings (e.g. "filter keys were not present") to stderr on an
+      # empty listing, and those must not be mistaken for a surviving resource.
+      if ! VMS="$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM" --format='value(name)' 2>"$TMP/list.err")"; then
+        echo "error: could not list VMs to confirm $VM is gone: $(cat "$TMP/list.err")" >&2; leftover=1
       elif [ -n "$VMS" ]; then
         echo "error: VM $VM still exists" >&2; leftover=1
       fi
-      if ! BKTS="$(gcloud storage buckets list --project="$PROJECT" --filter="name=$BUCKET" --format='value(name)' 2>&1)"; then
-        echo "error: could not list buckets to confirm gs://$BUCKET is gone: $BKTS" >&2; leftover=1
+      if ! BKTS="$(gcloud storage buckets list --project="$PROJECT" --filter="name=$BUCKET" --format='value(name)' 2>"$TMP/list.err")"; then
+        echo "error: could not list buckets to confirm gs://$BUCKET is gone: $(cat "$TMP/list.err")" >&2; leftover=1
       elif [ -n "$BKTS" ]; then
         echo "error: bucket gs://$BUCKET still exists" >&2; leftover=1
       fi

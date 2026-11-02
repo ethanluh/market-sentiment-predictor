@@ -36,7 +36,8 @@ case "$args" in
     [ -n "${FAKE_LEAK_VM:-}" ] || rm -f "$FAKE_STATE/vm" ;;
   "compute instances list"*)
     if [ -n "${FAKE_LIST_FAIL:-}" ]; then echo "permission denied" >&2; rc=1
-    elif [ -f "$FAKE_STATE/vm" ]; then echo vm; fi ;;
+    elif [ -f "$FAKE_STATE/vm" ]; then echo vm
+    else echo "WARNING: The following filter keys were not present in any resource : name" >&2; fi ;;
   "compute instances describe"*)
     n=$(( $(cat "$FAKE_STATE/describes" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_STATE/describes"
     [ -z "${FAKE_DESCRIBE_FAILS:-}" ] || [ "$n" -gt "$FAKE_DESCRIBE_FAILS" ] || exit 1
@@ -46,7 +47,9 @@ case "$args" in
   "storage cp /"*)
     mkdir -p "$FAKE_STATE/uploads"
     for a in "$@"; do case "$a" in /*.tgz) cp "$a" "$FAKE_STATE/uploads/" ;; esac; done ;;
-  "storage buckets list"*) [ -f "$FAKE_STATE/bucket" ] && echo bucket ;;
+  "storage buckets list"*)
+    if [ -f "$FAKE_STATE/bucket" ]; then echo bucket
+    else echo "WARNING: The following filter keys were not present in any resource : name" >&2; fi ;;
   "storage rm"*) rm -f "$FAKE_STATE/bucket" ;;
   "storage ls"*"/status/DONE") [ -f "$FAKE_STATE/done" ] || rc=1 ;;
   "storage ls"*"/status/FAILED") [ -f "$FAKE_STATE/failed" ] || rc=1 ;;
@@ -647,3 +650,10 @@ def test_the_dry_run_plans_the_first_zone_and_mentions_the_fallback(env: dict) -
     assert p.returncode == 0 and p.stdout.count("[dry-run] gcloud compute instances create") == 1
     assert "--zone=us-central1-a" in p.stdout and "would try the other zones" in p.stdout
     assert "zones us-central1-a us-central1-b" in p.stdout
+
+
+def test_gcloud_warnings_on_an_empty_listing_are_not_a_leak(env: dict) -> None:
+    """Real gcloud warns on stderr when a filtered list is empty; that must not read as a leftover."""
+    p = run(env, "--run")
+    assert p.returncode == 0, p.stderr
+    assert "still exists" not in p.stderr and "no billable resources remain" in p.stdout
