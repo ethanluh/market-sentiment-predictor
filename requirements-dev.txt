@@ -19,6 +19,9 @@ pandas-market-calendars>=4.3.0
 fastapi>=0.111.0
 httpx>=0.27.0
 
+# Alpaca SDK (news ingestion and, later, the trading adapter)
+alpaca-py>=0.30.0
+
 # Config
 python-dotenv>=1.0.0
 

@@ -20,6 +20,7 @@ ignored — every article is (re)scored by FinBERT for consistency.
 |---|---|---|---|
 | NewsAPI ✅ | `src/ingestion/news.py` | ~30 days | Default; `NEWS_API_KEY`. Long archives require accumulating over time. |
 | Alpha Vantage ✅ | `src/ingestion/alpha_vantage_news.py` | ~2022 → now | `NEWS_SENTIMENT`; ticker-native; `ALPHAVANTAGE_API_KEY`; can backfill history in one run. Free tier 25 req/day. |
+| Alpaca (implemented) | `src/ingestion/alpaca_news.py` | 2015 → now (per Alpaca's launch post) | Benzinga-sourced, ticker-tagged; `ALPACA_PAPER_KEY_ID` / `ALPACA_PAPER_SECRET_KEY`; free-plan limit 200 calls/min per the same post, which called it a limited-time beta, so confirm current terms. Uses `created_at` as the publish time. |
 
 Select the provider when building the archive:
 `python scripts/build_news_archive.py --ticker AAPL --source alphavantage --start 2022-01-01`.
