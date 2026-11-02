@@ -17,7 +17,9 @@
 set -euo pipefail
 
 PROJECT="${MSP_GCP_PROJECT:-}"
-ZONE="us-central1-a"
+# T4 capacity is often exhausted in one zone, so creation falls back through this list in order.
+# These are zones whose region (us-central1, us-east1, us-west1) has T4 quota in the msp-scoring project.
+ZONES="us-central1-a us-central1-b us-central1-c us-central1-f us-east1-c us-east1-d us-west1-a us-west1-b"
 MAX_HOURS=3
 VERIFY_N=50
 PY="python3"
@@ -42,7 +44,8 @@ usage() {
 
 Options:
   --project ID     GCP project (default: $MSP_GCP_PROJECT); must start with msp-scoring-
-  --zone Z         default us-central1-a
+  --zone Z         use only this zone
+  --zones "A B"    zones to try in order when a zone has no T4 capacity (default: 8 US zones)
   --max-hours N    hard cap on VM lifetime, default 3
   --tickers "A B"  score only these tickers (default: everything in the archive)
   --verify-n N     new cloud scores recomputed locally before merging, default 50
@@ -56,7 +59,8 @@ EOF
 while [ $# -gt 0 ]; do
   case "$1" in
     --project) PROJECT="${2:?}"; shift 2 ;;
-    --zone) ZONE="${2:?}"; shift 2 ;;
+    --zone) ZONES="${2:?}"; shift 2 ;;
+    --zones) ZONES="${2:?}"; shift 2 ;;
     --max-hours) MAX_HOURS="${2:?}"; shift 2 ;;
     --tickers) TICKERS="${2:?}"; shift 2 ;;
     --verify-n) VERIFY_N="${2:?}"; shift 2 ;;
@@ -77,6 +81,11 @@ done
 DATA_DIR="${DATA_DIR:-$REPO/data}"
 [ -d "$DATA_DIR" ] || die "data directory $DATA_DIR does not exist"
 DATA_DIR="$(cd "$DATA_DIR" && pwd)"  # absolute: it is symlinked from another directory later
+read -r -a ZONE_ARR <<<"$(echo $ZONES)"
+[ "${#ZONE_ARR[@]}" -gt 0 ] || die "no zones given"
+ZONES="${ZONE_ARR[*]}"
+ZONE="${ZONE_ARR[0]}"
+VM_ZONE="$ZONE"  # the zone cleanup deletes in: updated before every create attempt
 REGION="${ZONE%-*}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 VM="msp-score-$STAMP"
@@ -97,19 +106,25 @@ cleanup() {
   trap '' INT TERM HUP  # a second Ctrl-C must not abandon the deletions below
   local leftover=0
   if [ "$RUN" = 1 ]; then
+    # Deleting something that never existed (a capacity stockout creates no VM) is not an error;
+    # the listings below decide whether anything is actually left.
     if [ "$VM_CREATED" = 1 ]; then
-      log "deleting VM $VM"
-      gcloud compute instances delete "$VM" --project="$PROJECT" --zone="$ZONE" --quiet || leftover=1
+      log "deleting VM $VM (zone $VM_ZONE)"
+      gcloud compute instances delete "$VM" --project="$PROJECT" --zone="$VM_ZONE" --quiet || true
     fi
     if [ "$BUCKET_CREATED" = 1 ]; then
       log "deleting bucket gs://$BUCKET"
-      gcloud storage rm -r "gs://$BUCKET" --project="$PROJECT" || leftover=1
+      gcloud storage rm -r "gs://$BUCKET" --project="$PROJECT" || true
     fi
     if [ "$VM_CREATED" = 1 ] || [ "$BUCKET_CREATED" = 1 ]; then
-      if [ -n "$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM" --format='value(name)' 2>/dev/null)" ]; then
+      if ! VMS="$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM" --format='value(name)' 2>&1)"; then
+        echo "error: could not list VMs to confirm $VM is gone: $VMS" >&2; leftover=1
+      elif [ -n "$VMS" ]; then
         echo "error: VM $VM still exists" >&2; leftover=1
       fi
-      if [ -n "$(gcloud storage buckets list --project="$PROJECT" --filter="name=$BUCKET" --format='value(name)' 2>/dev/null)" ]; then
+      if ! BKTS="$(gcloud storage buckets list --project="$PROJECT" --filter="name=$BUCKET" --format='value(name)' 2>&1)"; then
+        echo "error: could not list buckets to confirm gs://$BUCKET is gone: $BKTS" >&2; leftover=1
+      elif [ -n "$BKTS" ]; then
         echo "error: bucket gs://$BUCKET still exists" >&2; leftover=1
       fi
       [ "$leftover" = 0 ] && log "no billable resources remain"
@@ -186,7 +201,7 @@ size() { du -h "$1" | cut -f1; }
 COST_RATE="$RATE_ON_DEMAND"; [ "$SPOT" = 1 ] && COST_RATE="$RATE_SPOT"
 MAX_COST="$(awk -v h="$MAX_HOURS" -v r="$COST_RATE" 'BEGIN{printf "%.2f", h*r}')"
 log "mode: $([ "$RUN" = 1 ] && echo RUN || echo 'dry run (nothing will be created)')"
-log "project $PROJECT, zone $ZONE, $MACHINE_TYPE + 1x nvidia-tesla-t4, $([ "$SPOT" = 1 ] && echo spot || echo on-demand)"
+log "project $PROJECT, zones $ZONES (in order), $MACHINE_TYPE + 1x nvidia-tesla-t4, $([ "$SPOT" = 1 ] && echo spot || echo on-demand)"
 log "uploads: code $(size "$TMP/code.tgz") (git HEAD $(git -C "$REPO" rev-parse --short HEAD)), news $(size "$TMP/news.tgz"), existing scores $([ "$HAVE_SCORES" = 1 ] && size "$TMP/scores.tgz" || echo none)"
 log "estimated cost: about \$$COST_RATE/hour; hard cap $MAX_HOURS h => at most about \$$MAX_COST (approximate list prices; a 112k-article run should take well under 1 h)"
 
@@ -231,7 +246,7 @@ finish FAILED
 exit 1
 STARTUP
 
-CREATE=(gcloud compute instances create "$VM" --project="$PROJECT" --zone="$ZONE"
+CREATE=(gcloud compute instances create "$VM" --project="$PROJECT"
   --machine-type="$MACHINE_TYPE" --accelerator=type=nvidia-tesla-t4,count=1
   --maintenance-policy=TERMINATE
   --image-family="$IMAGE_FAMILY" --image-project=deeplearning-platform-release
@@ -241,8 +256,29 @@ CREATE=(gcloud compute instances create "$VM" --project="$PROJECT" --zone="$ZONE
   --metadata-from-file="startup-script=$TMP/startup.sh"
   --instance-termination-action=DELETE --max-run-duration="${MAX_HOURS}h")
 [ "$SPOT" = 1 ] && CREATE+=(--provisioning-model=SPOT)
-[ "$RUN" = 1 ] && VM_CREATED=1  # marked first: an error or Ctrl-C mid-create must still delete it
-run "${CREATE[@]}"
+CREATED_ZONE=""
+for ZONE in "${ZONE_ARR[@]}"; do
+  VM_ZONE="$ZONE"
+  [ "$RUN" = 1 ] && VM_CREATED=1  # marked first: an error or Ctrl-C mid-create must still delete it
+  if [ "$RUN" != 1 ]; then
+    run "${CREATE[@]}" --zone="$ZONE"
+    log "(a real run would try the other zones in order if $ZONE has no T4 capacity)"
+    break
+  fi
+  if "${CREATE[@]}" --zone="$ZONE" 2>"$TMP/create.err"; then CREATED_ZONE="$ZONE"; break; fi
+  cat "$TMP/create.err" >&2
+  # Google wraps this message across lines, so normalise whitespace before matching.
+  if tr '\n' ' ' <"$TMP/create.err" | grep -Eq 'ZONE_RESOURCE_POOL_EXHAUSTED|resource_availability|does not have +enough +resources'; then
+    log "no T4 capacity in $ZONE; trying the next zone"
+    continue
+  fi
+  die "instance creation failed in $ZONE for a reason other than capacity; not retrying"
+done
+if [ "$RUN" = 1 ] && [ -z "$CREATED_ZONE" ]; then
+  die "no T4 capacity in any of: $ZONES. Try again later, add zones with --zones, or use --spot (a separate capacity pool)"
+fi
+ZONE="${CREATED_ZONE:-$ZONE}"
+[ "$RUN" = 1 ] && log "VM $VM created in $ZONE"
 
 if [ "$RUN" != 1 ]; then
   log "dry run complete. After the VM finishes, this script would download results.tgz, run"

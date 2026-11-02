@@ -17,6 +17,13 @@ args="$*"
 rc=0
 case "$args" in
   "compute instances create"*)
+    zone=""
+    for a in "$@"; do case "$a" in --zone=*) zone="${a#--zone=}" ;; esac; done
+    case " ${FAKE_EXHAUSTED_ZONES:-} " in
+      *" $zone "*)
+        printf 'ERROR: (gcloud.compute.instances.create) Could not fetch resource:\n---\ncode: ZONE_RESOURCE_POOL_EXHAUSTED\nmessage: The zone projects/p/zones/%s does not have\n  enough resources available to fulfill the request.\n' "$zone" >&2
+        exit 1 ;;
+    esac
     touch "$FAKE_STATE/vm"
     for a in "$@"; do
       case "$a" in --metadata-from-file=startup-script=*) cp "${a#*=startup-script=}" "$FAKE_STATE/startup.sh" ;; esac
@@ -27,7 +34,9 @@ case "$args" in
   "compute instances delete"*)
     [ -z "${FAKE_DELETE_SLEEP:-}" ] || sleep "$FAKE_DELETE_SLEEP"
     [ -n "${FAKE_LEAK_VM:-}" ] || rm -f "$FAKE_STATE/vm" ;;
-  "compute instances list"*) [ -f "$FAKE_STATE/vm" ] && echo vm ;;
+  "compute instances list"*)
+    if [ -n "${FAKE_LIST_FAIL:-}" ]; then echo "permission denied" >&2; rc=1
+    elif [ -f "$FAKE_STATE/vm" ]; then echo vm; fi ;;
   "compute instances describe"*)
     n=$(( $(cat "$FAKE_STATE/describes" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_STATE/describes"
     [ -z "${FAKE_DESCRIBE_FAILS:-}" ] || [ "$n" -gt "$FAKE_DESCRIBE_FAILS" ] || exit 1
@@ -577,3 +586,64 @@ def test_longer_broker_key_ids_are_caught_too(env: dict, content: str) -> None:
     _commit(Path(env["T_REPO"]), "src/notes.py", content)
     p = run(env)
     assert p.returncode != 0 and "shaped like a credential" in p.stderr
+
+
+# ---- zone fallback and authoritative cleanup ----------------------------------------------------
+
+
+def create_zones(env: dict) -> list[str]:
+    return [
+        c.split("--zone=")[1].split()[0]
+        for c in calls(env)
+        if c.startswith("compute instances create")
+    ]
+
+
+def test_a_stocked_out_zone_falls_through_to_the_next_one(env: dict) -> None:
+    env["FAKE_EXHAUSTED_ZONES"] = "us-central1-a us-central1-b"
+    p = run(env, "--run", "--zones", "us-central1-a us-central1-b us-central1-c")
+    assert p.returncode == 0, p.stderr
+    assert create_zones(env) == ["us-central1-a", "us-central1-b", "us-central1-c"]
+    assert "created in us-central1-c" in p.stdout
+    assert "--zone=us-central1-c" in next(
+        c for c in calls(env) if c.startswith("compute instances delete")
+    )
+    assert "--merge-from" in "\n".join(calls(env))
+
+
+def test_every_zone_exhausted_fails_cleanly_without_a_false_leak_report(env: dict) -> None:
+    env["FAKE_EXHAUSTED_ZONES"] = "us-central1-a us-central1-b"
+    p = run(env, "--run", "--zones", "us-central1-a us-central1-b")
+    assert p.returncode != 0 and "no T4 capacity in any of" in p.stderr and "--spot" in p.stderr
+    assert "still exists" not in p.stderr and "no billable resources remain" in p.stdout
+    assert not (Path(env["T_STATE"]) / "bucket").exists() and "--verify" not in "\n".join(
+        calls(env)
+    )
+
+
+def test_a_non_capacity_create_failure_is_not_retried(env: dict) -> None:
+    env["FAKE_CREATE_FAIL"] = "1"
+    p = run(env, "--run", "--zones", "us-central1-a us-central1-b us-central1-c")
+    assert p.returncode != 0 and "other than capacity" in p.stderr
+    assert create_zones(env) == ["us-central1-a"]
+    assert not (Path(env["T_STATE"]) / "vm").exists()
+
+
+def test_a_single_zone_is_tried_once_and_only_once(env: dict) -> None:
+    env["FAKE_EXHAUSTED_ZONES"] = "us-central1-a"
+    p = run(env, "--run", "--zone", "us-central1-a")
+    assert p.returncode != 0 and create_zones(env) == ["us-central1-a"]
+
+
+def test_a_failing_listing_is_reported_not_taken_as_all_clear(env: dict) -> None:
+    env["FAKE_LIST_FAIL"] = "1"
+    p = run(env, "--run")
+    assert p.returncode != 0 and "could not list VMs" in p.stderr
+    assert "no billable resources remain" not in p.stdout
+
+
+def test_the_dry_run_plans_the_first_zone_and_mentions_the_fallback(env: dict) -> None:
+    p = run(env)
+    assert p.returncode == 0 and p.stdout.count("[dry-run] gcloud compute instances create") == 1
+    assert "--zone=us-central1-a" in p.stdout and "would try the other zones" in p.stdout
+    assert "zones us-central1-a us-central1-b" in p.stdout
