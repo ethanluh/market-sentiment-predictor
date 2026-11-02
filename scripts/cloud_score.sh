@@ -21,6 +21,7 @@ PROJECT="${MSP_GCP_PROJECT:-}"
 # These are zones whose region (us-central1, us-east1, us-west1) has T4 quota in the msp-scoring project.
 ZONES="us-central1-a us-central1-b us-central1-c us-central1-f us-east1-c us-east1-d us-west1-a us-west1-b"
 MAX_HOURS=3
+MAX_ATTEMPTS=4
 VERIFY_N=50
 PY="python3"
 TICKERS=""
@@ -46,7 +47,8 @@ Options:
   --project ID     GCP project (default: $MSP_GCP_PROJECT); must start with msp-scoring-
   --zone Z         use only this zone
   --zones "A B"    zones to try in order when a zone has no T4 capacity (default: 8 US zones)
-  --max-hours N    hard cap on VM lifetime, default 3
+  --max-hours N    hard cap on total run time across all VMs, default 3
+  --max-attempts N VMs to try when one is lost (spot preemption), resuming from saved scores; default 4
   --tickers "A B"  score only these tickers (default: everything in the archive)
   --verify-n N     new cloud scores recomputed locally before merging, default 50
   --python PATH    local python with torch and transformers (needed for --verify), default python3
@@ -62,6 +64,7 @@ while [ $# -gt 0 ]; do
     --zone) ZONES="${2:?}"; shift 2 ;;
     --zones) ZONES="${2:?}"; shift 2 ;;
     --max-hours) MAX_HOURS="${2:?}"; shift 2 ;;
+    --max-attempts) MAX_ATTEMPTS="${2:?}"; shift 2 ;;
     --tickers) TICKERS="${2:?}"; shift 2 ;;
     --verify-n) VERIFY_N="${2:?}"; shift 2 ;;
     --python) PY="${2:?}"; shift 2 ;;
@@ -77,6 +80,7 @@ done
 [ -n "$PROJECT" ] || die "no project: pass --project or set MSP_GCP_PROJECT"
 [[ "$PROJECT" =~ ^msp-scoring- ]] || die "refusing project '$PROJECT': only msp-scoring-* projects are allowed"
 [[ "$MAX_HOURS" =~ ^[1-9][0-9]*$ ]] || die "--max-hours must be a positive integer"
+[[ "$MAX_ATTEMPTS" =~ ^[1-9][0-9]*$ ]] || die "--max-attempts must be a positive integer"
 [[ "$VERIFY_N" =~ ^[1-9][0-9]*$ ]] || die "--verify-n must be a positive integer"
 DATA_DIR="${DATA_DIR:-$REPO/data}"
 [ -d "$DATA_DIR" ] || die "data directory $DATA_DIR does not exist"
@@ -88,10 +92,12 @@ ZONE="${ZONE_ARR[0]}"
 VM_ZONE="$ZONE"  # the zone cleanup deletes in: updated before every create attempt
 REGION="${ZONE%-*}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-VM="msp-score-$STAMP"
+VM_PREFIX="msp-score-$STAMP"
+VM="$VM_PREFIX-a1"
+VMS_CREATED=()  # "name:zone" for every create attempted; cleanup deletes them all
+ATTEMPT=1
 BUCKET="$PROJECT-score-$(date +%s)"
 TMP="$(mktemp -d)"
-VM_CREATED=0
 BUCKET_CREATED=0
 KEEP_TMP=0
 
@@ -108,21 +114,21 @@ cleanup() {
   if [ "$RUN" = 1 ]; then
     # Deleting something that never existed (a capacity stockout creates no VM) is not an error;
     # the listings below decide whether anything is actually left.
-    if [ "$VM_CREATED" = 1 ]; then
-      log "deleting VM $VM (zone $VM_ZONE)"
-      gcloud compute instances delete "$VM" --project="$PROJECT" --zone="$VM_ZONE" --quiet || true
-    fi
+    for entry in ${VMS_CREATED[@]+"${VMS_CREATED[@]}"}; do
+      log "deleting VM ${entry%%:*} (zone ${entry##*:})"
+      gcloud compute instances delete "${entry%%:*}" --project="$PROJECT" --zone="${entry##*:}" --quiet || true
+    done
     if [ "$BUCKET_CREATED" = 1 ]; then
       log "deleting bucket gs://$BUCKET"
       gcloud storage rm -r "gs://$BUCKET" --project="$PROJECT" || true
     fi
-    if [ "$VM_CREATED" = 1 ] || [ "$BUCKET_CREATED" = 1 ]; then
+    if [ "${#VMS_CREATED[@]}" -gt 0 ] || [ "$BUCKET_CREATED" = 1 ]; then
       # stdout only: gcloud prints warnings (e.g. "filter keys were not present") to stderr on an
       # empty listing, and those must not be mistaken for a surviving resource.
-      if ! VMS="$(gcloud compute instances list --project="$PROJECT" --filter="name=$VM" --format='value(name)' 2>"$TMP/list.err")"; then
-        echo "error: could not list VMs to confirm $VM is gone: $(cat "$TMP/list.err")" >&2; leftover=1
+      if ! VMS="$(gcloud compute instances list --project="$PROJECT" --filter="name~^$VM_PREFIX" --format='value(name)' 2>"$TMP/list.err")"; then
+        echo "error: could not list VMs to confirm they are gone: $(cat "$TMP/list.err")" >&2; leftover=1
       elif [ -n "$VMS" ]; then
-        echo "error: VM $VM still exists" >&2; leftover=1
+        echo "error: VM(s) still exist: $VMS" >&2; leftover=1
       fi
       if ! BKTS="$(gcloud storage buckets list --project="$PROJECT" --filter="name=$BUCKET" --format='value(name)' 2>"$TMP/list.err")"; then
         echo "error: could not list buckets to confirm gs://$BUCKET is gone: $(cat "$TMP/list.err")" >&2; leftover=1
@@ -242,9 +248,18 @@ tar xzf code.tgz -C code && tar xzf news.tgz -C data
 [ -f scores.tgz ] && tar xzf scores.tgz -C data
 pip install -q "transformers>=4.40,<5" pandas numpy || { finish FAILED; exit 1; }
 export MSP_DATA_ROOT=/opt/job/data
+# A spot VM can be reclaimed at any moment and its disk goes with it, so push progress to the bucket
+# every minute. The controller resumes from these partial scores on a replacement VM.
+( while sleep 60; do
+    gcloud storage rsync -r data/processed/news_scores "gs://$BUCKET/partial/news_scores" >/dev/null 2>&1
+  done ) &
+UPLOADER=$!
 ARGS=()
 [ -n "$TICKERS" ] && ARGS+=(--tickers $TICKERS)
-if python3 code/scripts/score_archive.py "${ARGS[@]}"; then
+python3 -u code/scripts/score_archive.py "${ARGS[@]}"
+RC=$?
+kill "$UPLOADER" 2>/dev/null
+if [ "$RC" -eq 0 ]; then
   tar czf results.tgz -C data processed/news_scores \
     && gcloud storage cp results.tgz "gs://$BUCKET/results.tgz" && finish DONE && exit 0
 fi
@@ -252,50 +267,64 @@ finish FAILED
 exit 1
 STARTUP
 
-CREATE=(gcloud compute instances create "$VM" --project="$PROJECT"
-  --machine-type="$MACHINE_TYPE" --accelerator=type=nvidia-tesla-t4,count=1
-  --maintenance-policy=TERMINATE
-  --image-family="$IMAGE_FAMILY" --image-project=deeplearning-platform-release
-  --boot-disk-size=100GB --boot-disk-type=pd-balanced
-  --scopes=storage-rw
-  --metadata="install-nvidia-driver=True,bucket=$BUCKET,tickers=$TICKERS"
-  --metadata-from-file="startup-script=$TMP/startup.sh"
-  --instance-termination-action=DELETE --max-run-duration="${MAX_HOURS}h")
-[ "$SPOT" = 1 ] && CREATE+=(--provisioning-model=SPOT)
-CREATED_ZONE=""
-for ZONE in "${ZONE_ARR[@]}"; do
-  VM_ZONE="$ZONE"
-  [ "$RUN" = 1 ] && VM_CREATED=1  # marked first: an error or Ctrl-C mid-create must still delete it
+TOTAL_DEADLINE=$(( $(date +%s) + MAX_HOURS * 3600 ))
+CAPACITY_RE='ZONE_RESOURCE_POOL_EXHAUSTED|resource_availability|does not have +enough +resources'
+# Zones are tried in order starting at $1 (rotating on a retry, so a lost VM moves elsewhere).
+launch_vm() {
+  local start="$1" n="${#ZONE_ARR[@]}" tried=0 hours
+  VM="$VM_PREFIX-a$ATTEMPT"
+  hours=$(( (TOTAL_DEADLINE - $(date +%s) + 3599) / 3600 )); [ "$hours" -ge 1 ] || hours=1
+  local create=(gcloud compute instances create "$VM" --project="$PROJECT"
+    --machine-type="$MACHINE_TYPE" --accelerator=type=nvidia-tesla-t4,count=1
+    --maintenance-policy=TERMINATE
+    --image-family="$IMAGE_FAMILY" --image-project=deeplearning-platform-release
+    --boot-disk-size=100GB --boot-disk-type=pd-balanced
+    --scopes=storage-rw
+    --metadata="install-nvidia-driver=True,bucket=$BUCKET,tickers=$TICKERS"
+    --metadata-from-file="startup-script=$TMP/startup.sh"
+    --instance-termination-action=DELETE --max-run-duration="${hours}h")
+  [ "$SPOT" = 1 ] && create+=(--provisioning-model=SPOT)
   if [ "$RUN" != 1 ]; then
-    run "${CREATE[@]}" --zone="$ZONE"
+    ZONE="${ZONE_ARR[$start]}"
+    run "${create[@]}" --zone="$ZONE"
     log "(a real run would try the other zones in order if $ZONE has no T4 capacity)"
-    break
+    return 0
   fi
-  if "${CREATE[@]}" --zone="$ZONE" 2>"$TMP/create.err"; then CREATED_ZONE="$ZONE"; break; fi
-  cat "$TMP/create.err" >&2
-  # Google wraps this message across lines, so normalise whitespace before matching.
-  if grep -Eq 'ZONE_RESOURCE_POOL_EXHAUSTED|resource_availability|does not have +enough +resources' < <(tr '\n' ' ' <"$TMP/create.err"); then
-    log "no T4 capacity in $ZONE; trying the next zone"
-    continue
-  fi
-  die "instance creation failed in $ZONE for a reason other than capacity; not retrying"
-done
-if [ "$RUN" = 1 ] && [ -z "$CREATED_ZONE" ]; then
+  while [ "$tried" -lt "$n" ]; do
+    ZONE_IDX=$(( (start + tried) % n ))
+    ZONE="${ZONE_ARR[$ZONE_IDX]}"
+    VMS_CREATED+=("$VM:$ZONE")  # recorded first: an error or Ctrl-C mid-create must still delete it
+    if "${create[@]}" --zone="$ZONE" 2>"$TMP/create.err"; then
+      log "VM $VM created in $ZONE (attempt $ATTEMPT of $MAX_ATTEMPTS)"
+      return 0
+    fi
+    cat "$TMP/create.err" >&2
+    # Google wraps this message across lines, so normalise whitespace before matching.
+    if grep -Eq "$CAPACITY_RE" < <(tr '\n' ' ' <"$TMP/create.err"); then
+      log "no T4 capacity in $ZONE; trying the next zone"
+      VMS_CREATED=("${VMS_CREATED[@]:0:${#VMS_CREATED[@]}-1}")  # a clean stockout created nothing to delete
+      tried=$((tried + 1))
+      continue
+    fi
+    die "instance creation failed in $ZONE for a reason other than capacity; not retrying"
+  done
   die "no T4 capacity in any of: $ZONES. Try again later, add zones with --zones, or use --spot (a separate capacity pool)"
-fi
-ZONE="${CREATED_ZONE:-$ZONE}"
-[ "$RUN" = 1 ] && log "VM $VM created in $ZONE"
+}
+
+ZONE_IDX=0
+launch_vm 0
 
 if [ "$RUN" != 1 ]; then
   log "dry run complete. After the VM finishes, this script would download results.tgz, run"
   log "  $PY scripts/score_archive.py --verify $VERIFY_N   (on the downloaded scores, before any merge)"
   log "  $PY scripts/score_archive.py --merge-from <downloaded scores>"
-  log "and then delete the VM and the bucket. Re-run with --run to do it."
+  log "and then delete the VM and the bucket. If the VM is lost (spot preemption) it resumes from the"
+  log "scores the VM pushed to the bucket, on a new VM in the next zone, up to $MAX_ATTEMPTS attempts."
+  log "Re-run with --run to do it."
   exit 0
 fi
 
 # --- wait for the VM ----------------------------------------------------------------------------
-DEADLINE=$(( $(date +%s) + MAX_HOURS * 3600 + 900 ))
 DESCRIBE_FAILS=0
 # Best-effort: keep the VM's serial console (boot and startup-script output) so that if the VM
 # vanishes we can still say why. Diagnostics only; a failure here never affects the run.
@@ -314,41 +343,99 @@ show_diagnostics() {
   [ -s "$TMP/describe.err" ] && { echo "--- last gcloud describe error:" >&2; cat "$TMP/describe.err" >&2; }
   return 0
 }
-log "waiting for the VM job (poll every ${POLL_SECONDS}s, hard stop in about $MAX_HOURS h)"
-while :; do
-  if gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1; then break; fi
-  if gcloud storage ls "gs://$BUCKET/status/FAILED" >/dev/null 2>&1; then
-    gcloud storage cp "gs://$BUCKET/score.log" "$TMP/score.log" >/dev/null 2>&1 || true
-    show_diagnostics
-    die "the VM job failed; see $TMP/score.log"
-  fi
-  [ "$(date +%s)" -lt "$DEADLINE" ] || { show_diagnostics; die "timed out waiting for the VM job"; }
-  capture_serial
-  if STATUS="$(gcloud compute instances describe "$VM" --project="$PROJECT" --zone="$ZONE" --format='value(status)' 2>"$TMP/describe.err")"; then
-    DESCRIBE_FAILS=0
-    case "$STATUS" in
-      PROVISIONING|STAGING|RUNNING) ;;
-      TERMINATED|STOPPING|SUSPENDED|REPAIRING|"")
-        # The VM may have just finished and shut itself down: look for the marker once more.
-        gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1 && continue
+# Returns 0 when the VM job finished, 2 when the VM was lost without a result (a spot preemption).
+# Real failures (the job itself failed, a timeout, unreadable status) die here.
+wait_for_vm() {
+  DESCRIBE_FAILS=0
+  : >"$TMP/serial.log"; : >"$TMP/describe.err"
+  log "waiting for the VM job (poll every ${POLL_SECONDS}s)"
+  while :; do
+    if gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1; then return 0; fi
+    if gcloud storage ls "gs://$BUCKET/status/FAILED" >/dev/null 2>&1; then
+      gcloud storage cp "gs://$BUCKET/score.log" "$TMP/score.log" >/dev/null 2>&1 || true
+      show_diagnostics
+      die "the VM job failed; see $TMP/score.log"
+    fi
+    [ "$(date +%s)" -lt $(( TOTAL_DEADLINE + 900 )) ] || { show_diagnostics; die "timed out waiting for the VM job"; }
+    capture_serial
+    if STATUS="$(gcloud compute instances describe "$VM" --project="$PROJECT" --zone="$ZONE" --format='value(status)' 2>"$TMP/describe.err")"; then
+      DESCRIBE_FAILS=0
+      case "$STATUS" in
+        PROVISIONING|STAGING|RUNNING) ;;
+        TERMINATED|STOPPING|SUSPENDED|REPAIRING|"")
+          # The VM may have just finished and shut itself down: look for the marker once more.
+          gcloud storage ls "gs://$BUCKET/status/DONE" >/dev/null 2>&1 && continue
+          log "the VM is ${STATUS:-GONE} and wrote no result"
+          return 2 ;;
+        *) show_diagnostics; die "the VM is in unexpected state $STATUS" ;;
+      esac
+    else
+      # "Not found" is not transient: the VM is gone (spot preemption, or it deleted itself).
+      if grep -Eiq 'was not found|notFound|not found' "$TMP/describe.err"; then
+        log "the VM no longer exists and wrote no result (spot preemption?)"
+        return 2
+      fi
+      DESCRIBE_FAILS=$((DESCRIBE_FAILS + 1))
+      if [ "$DESCRIBE_FAILS" -ge 5 ]; then
         show_diagnostics
-        die "the VM is ${STATUS:-GONE} and no result was uploaded (preempted or deleted)" ;;
-      *) show_diagnostics; die "the VM is in unexpected state $STATUS" ;;
-    esac
-  else
-    # "Not found" is not transient: the VM is gone (spot preemption, or it deleted itself) and
-    # wrote no result, so waiting longer would only hide it.
-    if grep -Eiq 'was not found|notFound|not found' "$TMP/describe.err"; then
-      show_diagnostics
-      die "the VM no longer exists and wrote no result (spot preemption, or it deleted itself)"
+        die "could not read the VM status five times in a row"
+      fi
     fi
-    DESCRIBE_FAILS=$((DESCRIBE_FAILS + 1))
-    if [ "$DESCRIBE_FAILS" -ge 5 ]; then
-      show_diagnostics
-      die "could not read the VM status five times in a row"
-    fi
+    sleep "$POLL_SECONDS"
+  done
+}
+
+SCORE_ARGS=()
+[ "${#TICKER_ARR[@]}" -gt 0 ] && SCORE_ARGS=(--tickers "${TICKER_ARR[@]}")
+
+# Verify first, merge second: nothing reaches the local caches unless the sampled scores recompute
+# correctly here. $1 is a directory holding processed/news_scores.
+verify_and_merge() {
+  local dir="$1"
+  [ -e "$dir/raw" ] || ln -s "$DATA_DIR/raw" "$dir/raw"
+  log "verifying up to $VERIFY_N scores the cloud ADDED against a local recomputation"
+  if ! MSP_DATA_ROOT="$dir" "$PY" "$REPO/scripts/score_archive.py" --verify "$VERIFY_N" \
+    --baseline-root "$DATA_DIR" ${SCORE_ARGS[@]+"${SCORE_ARGS[@]}"}; then
+    KEEP_TMP=1
+    die "verification failed; nothing was merged. The cloud scores are in $dir/processed/news_scores"
   fi
-  sleep "$POLL_SECONDS"
+  log "merging into the local score caches"
+  MSP_DATA_ROOT="$DATA_DIR" "$PY" "$REPO/scripts/score_archive.py" --merge-from "$dir/processed/news_scores" ${SCORE_ARGS[@]+"${SCORE_ARGS[@]}"}
+}
+
+# Fetch whatever scores the lost VM had pushed and make them the starting point for the next VM.
+# They are a superset of the scores it started with. Returns 1 if the VM saved nothing.
+salvage_partial() {
+  rm -rf "$TMP/partial" "$TMP/pack"; mkdir -p "$TMP/partial" "$TMP/pack/processed"
+  if gcloud storage cp -r "gs://$BUCKET/partial/news_scores" "$TMP/partial/" >/dev/null 2>&1 \
+     && [ -n "$(ls -A "$TMP/partial/news_scores" 2>/dev/null)" ]; then
+    mv "$TMP/partial/news_scores" "$TMP/pack/processed/news_scores"
+    tar -C "$TMP/pack" -czf "$TMP/scores.tgz" processed
+    gcloud storage cp "$TMP/scores.tgz" "gs://$BUCKET/scores.tgz" --project="$PROJECT"
+    log "salvaged $(ls "$TMP/pack/processed/news_scores" | wc -l | tr -d ' ') score cache file(s) from the lost VM"
+    return 0
+  fi
+  log "the lost VM had saved no partial scores"
+  return 1
+}
+
+while :; do
+  RC=0; wait_for_vm || RC=$?
+  [ "$RC" -eq 0 ] && break
+  # RC is 2: the VM was lost. Keep its console for the record, then resume or give up.
+  show_diagnostics >&2
+  SALVAGED=0; salvage_partial && SALVAGED=1
+  if [ "$ATTEMPT" -ge "$MAX_ATTEMPTS" ] || [ "$(date +%s)" -ge "$TOTAL_DEADLINE" ]; then
+    if [ "$SALVAGED" = 1 ]; then
+      log "out of attempts; verifying and merging the partial scores that were saved"
+      verify_and_merge "$TMP/pack"
+      die "the VM was lost $ATTEMPT time(s) and the job did not finish; the saved partial scores WERE merged, so rerun to continue"
+    fi
+    die "the VM was lost $ATTEMPT time(s) and saved nothing; try again later or without --spot"
+  fi
+  ATTEMPT=$((ATTEMPT + 1))
+  log "resuming on a new VM from the saved scores (attempt $ATTEMPT of $MAX_ATTEMPTS)"
+  launch_vm $(( (ZONE_IDX + 1) % ${#ZONE_ARR[@]} ))
 done
 log "VM job finished"
 
@@ -358,16 +445,5 @@ gcloud storage cp "gs://$BUCKET/score.log" "$TMP/score.log" --project="$PROJECT"
 mkdir -p "$TMP/v"
 tar -xzf "$TMP/results.tgz" -C "$TMP/v"
 [ -d "$TMP/v/processed/news_scores" ] || { KEEP_TMP=1; die "results.tgz has no processed/news_scores"; }
-ln -s "$DATA_DIR/raw" "$TMP/v/raw"
-
-SCORE_ARGS=()
-[ "${#TICKER_ARR[@]}" -gt 0 ] && SCORE_ARGS=(--tickers "${TICKER_ARR[@]}")
-log "verifying up to $VERIFY_N scores the cloud ADDED against a local recomputation"
-if ! MSP_DATA_ROOT="$TMP/v" "$PY" "$REPO/scripts/score_archive.py" --verify "$VERIFY_N" \
-  --baseline-root "$DATA_DIR" ${SCORE_ARGS[@]+"${SCORE_ARGS[@]}"}; then
-  KEEP_TMP=1
-  die "verification failed; nothing was merged. The cloud scores are in $TMP/v/processed/news_scores"
-fi
-log "merging into the local score caches"
-MSP_DATA_ROOT="$DATA_DIR" "$PY" "$REPO/scripts/score_archive.py" --merge-from "$TMP/v/processed/news_scores" ${SCORE_ARGS[@]+"${SCORE_ARGS[@]}"}
+verify_and_merge "$TMP/v"
 log "done"

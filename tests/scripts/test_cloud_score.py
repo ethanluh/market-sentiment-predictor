@@ -29,7 +29,10 @@ case "$args" in
       case "$a" in --metadata-from-file=startup-script=*) cp "${a#*=startup-script=}" "$FAKE_STATE/startup.sh" ;; esac
     done
     [ -n "${FAKE_CREATE_FAIL:-}" ] && exit 1
+    n=$(( $(cat "$FAKE_STATE/creates" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_STATE/creates"
+    rm -f "$FAKE_STATE/preempted"
     if [ -n "${FAKE_FAILED:-}" ]; then touch "$FAKE_STATE/failed"
+    elif [ -n "${FAKE_PREEMPT_FIRST:-}" ] && [ "$n" -le "$FAKE_PREEMPT_FIRST" ]; then touch "$FAKE_STATE/preempted"
     elif [ -z "${FAKE_NEVER_DONE:-}" ]; then touch "$FAKE_STATE/done"; fi ;;
   "compute instances delete"*)
     [ -z "${FAKE_DELETE_SLEEP:-}" ] || sleep "$FAKE_DELETE_SLEEP"
@@ -40,7 +43,7 @@ case "$args" in
     else echo "WARNING: The following filter keys were not present in any resource : name" >&2; fi ;;
   "compute instances describe"*)
     n=$(( $(cat "$FAKE_STATE/describes" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$FAKE_STATE/describes"
-    if [ -n "${FAKE_DESCRIBE_NOTFOUND:-}" ]; then
+    if [ -n "${FAKE_DESCRIBE_NOTFOUND:-}" ] || [ -f "$FAKE_STATE/preempted" ]; then
       echo "ERROR: (gcloud.compute.instances.describe) Could not fetch resource: The resource 'projects/p/zones/z/instances/vm' was not found" >&2; exit 1
     fi
     [ -z "${FAKE_DESCRIBE_FAILS:-}" ] || [ "$n" -gt "$FAKE_DESCRIBE_FAILS" ] || { echo "ERROR: transient backend error" >&2; exit 1; }
@@ -58,6 +61,10 @@ case "$args" in
   "storage rm"*) rm -f "$FAKE_STATE/bucket" ;;
   "storage ls"*"/status/DONE") [ -f "$FAKE_STATE/done" ] || rc=1 ;;
   "storage ls"*"/status/FAILED") [ -f "$FAKE_STATE/failed" ] || rc=1 ;;
+  "storage cp -r gs://"*"/partial/news_scores"*)
+    if [ -n "${FAKE_PARTIAL:-}" ]; then
+      dest="${@: -1}"; mkdir -p "$dest/news_scores"; echo '{"u": 0.7}' > "$dest/news_scores/AAA.json"
+    else rc=1; fi ;;
   "storage cp gs://"*)
     for a in "$@"; do
       if [ "$prev" = "storage_cp_src" ]; then dest="$a"; break; fi
@@ -286,15 +293,16 @@ def test_a_failed_vm_job_stops_before_verify_and_cleans_up(env: dict) -> None:
 def test_a_vm_that_vanishes_is_reported_not_waited_for(env: dict) -> None:
     env["FAKE_NEVER_DONE"] = "1"
     env["FAKE_VM_STATUS"] = "TERMINATED"
-    p = run(env, "--run")
-    assert p.returncode != 0 and "the VM is TERMINATED" in p.stderr
+    p = run(env, "--run", "--max-attempts", "1")
+    assert p.returncode != 0 and "the VM is TERMINATED and wrote no result" in p.stdout
+    assert "lost 1 time(s) and saved nothing" in p.stderr
     assert "--merge-from" not in "\n".join(calls(env))
 
 
 def test_a_leftover_vm_makes_the_run_fail_loudly(env: dict) -> None:
     env["FAKE_LEAK_VM"] = "1"
     p = run(env, "--run")
-    assert p.returncode != 0 and "still exists" in p.stderr
+    assert p.returncode != 0 and "still exist" in p.stderr
 
 
 def test_a_missing_local_torch_stops_a_real_run_before_any_spending(env: dict) -> None:
@@ -623,7 +631,7 @@ def test_every_zone_exhausted_fails_cleanly_without_a_false_leak_report(env: dic
     env["FAKE_EXHAUSTED_ZONES"] = "us-central1-a us-central1-b"
     p = run(env, "--run", "--zones", "us-central1-a us-central1-b")
     assert p.returncode != 0 and "no T4 capacity in any of" in p.stderr and "--spot" in p.stderr
-    assert "still exists" not in p.stderr and "no billable resources remain" in p.stdout
+    assert "still exist" not in p.stderr and "no billable resources remain" in p.stdout
     assert not (Path(env["T_STATE"]) / "bucket").exists() and "--verify" not in "\n".join(
         calls(env)
     )
@@ -661,7 +669,7 @@ def test_gcloud_warnings_on_an_empty_listing_are_not_a_leak(env: dict) -> None:
     """Real gcloud warns on stderr when a filtered list is empty; that must not read as a leftover."""
     p = run(env, "--run")
     assert p.returncode == 0, p.stderr
-    assert "still exists" not in p.stderr and "no billable resources remain" in p.stdout
+    assert "still exist" not in p.stderr and "no billable resources remain" in p.stdout
 
 
 def test_a_credential_early_in_a_large_archive_is_never_missed(env: dict) -> None:
@@ -709,9 +717,10 @@ def test_a_vanished_vm_is_reported_at_once_with_its_serial_console(env: dict) ->
     env["FAKE_NEVER_DONE"] = "1"
     env["FAKE_DESCRIBE_NOTFOUND"] = "1"
     env["FAKE_SERIAL_NOTE"] = "nvidia-smi: no devices found"
-    p = run(env, "--run")
+    p = run(env, "--run", "--max-attempts", "1")
     assert p.returncode != 0
-    assert "no longer exists and wrote no result" in p.stderr
+    assert "no longer exists and wrote no result" in p.stdout
+    assert "lost 1 time(s) and saved nothing" in p.stderr
     assert "nvidia-smi: no devices found" in p.stderr and "was not found" in p.stderr
     assert len([c for c in calls(env) if "instances describe" in c]) == 1  # not retried five times
     assert not (Path(env["T_STATE"]) / "vm").exists()  # still cleaned up
@@ -729,3 +738,87 @@ def test_a_failed_vm_job_shows_the_serial_console_too(env: dict) -> None:
     env["FAKE_FAILED"] = "1"
     p = run(env, "--run")
     assert p.returncode != 0 and "the VM job failed" in p.stderr and "serial console" in p.stderr
+
+
+# ---- a lost (preempted) VM: salvage partial scores and resume on a new VM -------------------------
+
+ZONES3 = "us-central1-a us-central1-b us-central1-c"
+
+
+def vm_names(env: dict) -> list[str]:
+    return [c.split()[3] for c in calls(env) if c.startswith("compute instances create")]
+
+
+def test_a_preempted_vm_is_replaced_in_the_next_zone_seeded_with_the_saved_scores(
+    env: dict,
+) -> None:
+    env["FAKE_PREEMPT_FIRST"] = "1"
+    env["FAKE_PARTIAL"] = "1"
+    p = run(env, "--run", "--zones", ZONES3)
+    assert p.returncode == 0, p.stderr
+    assert create_zones(env) == ["us-central1-a", "us-central1-b"]  # the replacement moved on
+    assert [n.rsplit("-", 1)[1] for n in vm_names(env)] == ["a1", "a2"]
+    assert "resuming on a new VM" in p.stdout and "salvaged 1 score cache file" in p.stdout
+    # the replacement VM was seeded with the lost VM's progress
+    with tarfile.open(Path(env["T_STATE"]) / "uploads" / "scores.tgz") as tf:
+        assert tf.extractfile("processed/news_scores/AAA.json").read().strip() == b'{"u": 0.7}'
+    lines = calls(env)
+    assert index(lines, "--verify") < index(lines, "--merge-from")  # still verify-before-merge
+    assert (
+        sum(1 for c in lines if c.startswith("compute instances delete")) == 2
+    )  # both VMs removed
+    assert not (Path(env["T_STATE"]) / "vm").exists() and "no billable resources remain" in p.stdout
+
+
+def test_a_preempted_vm_with_no_saved_scores_still_gets_a_replacement(env: dict) -> None:
+    env["FAKE_PREEMPT_FIRST"] = "1"
+    p = run(env, "--run", "--zones", ZONES3)
+    assert p.returncode == 0, p.stderr
+    assert "had saved no partial scores" in p.stdout and len(create_zones(env)) == 2
+
+
+def test_running_out_of_attempts_merges_the_saved_partial_scores_then_fails(env: dict) -> None:
+    env["FAKE_PREEMPT_FIRST"] = "99"
+    env["FAKE_PARTIAL"] = "1"
+    p = run(env, "--run", "--zones", ZONES3, "--max-attempts", "2")
+    assert p.returncode != 0
+    assert "lost 2 time(s)" in p.stderr and "partial scores WERE merged" in p.stderr
+    assert len(create_zones(env)) == 2
+    lines = calls(env)
+    assert index(lines, "--verify") < index(
+        lines, "--merge-from"
+    )  # the partial scores were verified first
+    assert (
+        not (Path(env["T_STATE"]) / "vm").exists()
+        and not (Path(env["T_STATE"]) / "bucket").exists()
+    )
+
+
+def test_running_out_of_attempts_with_nothing_saved_merges_nothing(env: dict) -> None:
+    env["FAKE_PREEMPT_FIRST"] = "99"
+    p = run(env, "--run", "--zones", ZONES3, "--max-attempts", "2")
+    assert p.returncode != 0 and "saved nothing" in p.stderr
+    log = "\n".join(calls(env))
+    assert "--verify" not in log and "--merge-from" not in log
+
+
+def test_partial_scores_that_fail_verification_are_not_merged(env: dict) -> None:
+    env["FAKE_PREEMPT_FIRST"] = "99"
+    env["FAKE_PARTIAL"] = "1"
+    env["FAKE_VERIFY_RC"] = "1"
+    p = run(env, "--run", "--zones", ZONES3, "--max-attempts", "1")
+    assert p.returncode != 0 and "verification failed; nothing was merged" in p.stderr
+    assert "--merge-from" not in "\n".join(calls(env))
+
+
+def test_the_vm_script_checkpoints_progress_and_logs_unbuffered(env: dict) -> None:
+    run(env, "--run")
+    text = (Path(env["T_STATE"]) / "startup.sh").read_text()
+    assert "gcloud storage rsync -r data/processed/news_scores" in text and "sleep 60" in text
+    assert "python3 -u code/scripts/score_archive.py" in text and 'kill "$UPLOADER"' in text
+
+
+def test_max_attempts_is_validated_and_shown_in_the_dry_run(env: dict) -> None:
+    assert run(env, "--max-attempts", "0").returncode != 0
+    p = run(env, "--max-attempts", "3")
+    assert p.returncode == 0 and "up to 3 attempts" in p.stdout
