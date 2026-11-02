@@ -28,7 +28,46 @@ holds 159,730 article-ticker pairs, 112,483 unique URLs, and 44k articles with e
 is roughly 6 hours on that CPU. A T4-class GPU should take around half an hour (an estimate from
 published BERT-base throughput, not measured here).
 
-## Running it on a cloud GPU
+## One command on Google Cloud
+
+`scripts/cloud_score.sh` does the whole cloud round trip and cleans up after itself. It is a dry
+run unless you pass `--run`:
+
+```bash
+scripts/cloud_score.sh --project msp-scoring-XXXX            # prints the plan and estimated cost
+scripts/cloud_score.sh --project msp-scoring-XXXX --run      # create, score, verify, merge, delete
+```
+
+What it does with `--run`: tars the repo (`git archive HEAD`), `data/raw/news` and the existing
+score caches; creates a private bucket and uploads them; starts one T4 VM from a PyTorch GPU image;
+the VM pulls the files from the bucket, runs `score_archive.py`, and pushes `results.tgz` back. Back
+here it downloads the results, recomputes up to `--verify-n` (default 50) of the scores the cloud
+**added** (not the ones you already had) on this machine before merging anything, merges, then
+deletes the VM and the bucket and confirms nothing remains.
+
+Safety properties, all covered by tests that run the real script against a fake `gcloud`:
+
+- Only projects whose id starts with `msp-scoring-` are accepted.
+- Only the code, the news archive and the score caches are uploaded. The code archive is checked
+  for secret-looking file names (`.env*`, `*.env`, keys, `id_rsa`, `.netrc`, service-account JSON,
+  and so on), for private-key headers and well-known key shapes in any tracked file, and a blank
+  `.env.example` is allowed only if every key/secret/token/password entry is empty. The news
+  tarball may hold only `raw/news/<TICKER>/<day>.json`. `scripts/` and `src/` must be committed,
+  because the VM runs `HEAD` while verification runs your working tree.
+- No SSH, no open ports, no keys on the VM.
+- The VM has `--max-run-duration` (default 3 h) with termination action DELETE, so it removes itself
+  even if the script is killed, and it shuts itself down as soon as it finishes so the GPU stops
+  billing. The script marks the VM and bucket for cleanup before creating them, ignores further
+  Ctrl-C/TERM while cleaning up, exits non-zero on a signal (130/143), tolerates a few transient
+  status errors, deletes the VM and bucket on any exit, and fails loudly if either still exists.
+- A failed verification merges nothing and keeps the downloaded scores for inspection.
+- Cost is about $0.54/hour on demand (approximate list prices: T4 plus `n1-standard-4`), so the 3 h
+  cap is at most about $1.62. `--spot` is cheaper, but a preemption loses the run.
+
+Needs: `gcloud` logged in, GPU quota in the project (T4 and the global GPU limit), and a local Python
+with `torch` and `transformers` for the verification step (`--python`).
+
+## Running it on a cloud GPU by hand
 
 Only the news archive goes to the cloud: no API keys, no `.env`, no broker credentials. Scoring
 needs nothing but the articles and the public FinBERT weights.

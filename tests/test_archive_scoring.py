@@ -228,3 +228,67 @@ def test_invalid_batch_arguments_raise(archive: Path) -> None:
 def test_invalid_flush_threshold_raises(archive: Path) -> None:
     with pytest.raises(ValueError):
         score_archive(["AAA"], Fake(), flush_texts=0)
+
+
+# ---- score_archive.py --verify --baseline-root --------------------------------------------------
+
+
+def _cli():  # type: ignore[no-untyped-def]
+    spec = importlib.util.spec_from_file_location("score_cli2", Path("scripts/score_archive.py"))
+    module = importlib.util.module_from_spec(spec)  # type: ignore[arg-type]
+    spec.loader.exec_module(module)  # type: ignore[union-attr]
+    return module
+
+
+@pytest.fixture
+def fake_inference(monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-untyped-def]
+    import sys
+    import types
+
+    seen: list[str] = []
+    mod = types.ModuleType("src.sentiment.inference")
+    mod.score_batch = lambda texts, **kw: (seen.extend(texts), [min(len(t) / 100.0, 1.0) for t in texts])[1]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "src.sentiment.inference", mod)
+    return seen
+
+
+def test_verify_with_a_baseline_samples_only_scores_the_baseline_lacks(
+    archive: Path, fake_inference: list[str]
+) -> None:
+    na.write_day("AAA", DAY, [art("have1", "a" * 10), art("have2", "b" * 20), art("new", "c" * 30)])
+    na._save_score_cache("AAA", {"have1": 0.11, "have2": 0.21, "new": 0.31})
+    base = archive / "baseline" / "processed" / "news_scores"
+    base.mkdir(parents=True)
+    (base / "AAA.json").write_text(json.dumps({"have1": 0.11, "have2": 0.21}))
+    assert _cli()._verify(["AAA"], 10, 0, archive / "baseline") == 0
+    assert fake_inference == ["c" * 30 + "."]  # only the URL the baseline lacks was recomputed
+
+
+def test_verify_fails_when_a_new_cloud_score_is_wrong(
+    archive: Path, fake_inference: list[str]
+) -> None:
+    na.write_day("AAA", DAY, [art("new", "c" * 30)])
+    na._save_score_cache("AAA", {"new": 0.9})  # the cloud claims 0.9; recomputation gives 0.31
+    base = archive / "baseline"
+    assert _cli()._verify(["AAA"], 10, 0, base) == 1
+
+
+def test_verify_with_a_baseline_and_nothing_new_passes_without_recomputing(
+    archive: Path, fake_inference: list[str]
+) -> None:
+    na.write_day("AAA", DAY, [art("have", "a" * 10)])
+    na._save_score_cache("AAA", {"have": 0.11})
+    base = archive / "baseline" / "processed" / "news_scores"
+    base.mkdir(parents=True)
+    (base / "AAA.json").write_text(json.dumps({"have": 0.11}))
+    assert _cli()._verify(["AAA"], 10, 0, archive / "baseline") == 0 and fake_inference == []
+
+
+def test_a_corrupt_baseline_cache_raises(archive: Path, fake_inference: list[str]) -> None:
+    na.write_day("AAA", DAY, [art("u", "a")])
+    na._save_score_cache("AAA", {"u": 0.1})
+    base = archive / "baseline" / "processed" / "news_scores"
+    base.mkdir(parents=True)
+    (base / "AAA.json").write_text("{not json")
+    with pytest.raises(ValueError, match="corrupt score cache"):
+        _cli()._verify(["AAA"], 10, 0, archive / "baseline")
