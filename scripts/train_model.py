@@ -61,93 +61,43 @@ def train(
     (sector_proximity), ``use_vix`` (regime_label via ^VIX), ``use_trends``
     (search_interest_zscore), ``use_insider_flow`` (insider_flow_npr).
     """
-    import pandas as pd
-
-    from src.ingestion.price import fetch_prices, fetch_returns_matrix
-    from src.prediction.baselines import horizon_to_steps
-    from src.prediction.features import build_feature_matrix
+    from src.eval.targets import forward_log_return
+    from src.prediction.baselines import horizon_to_interval, horizon_to_steps
+    from src.prediction.dataset import DatasetConfig, build_dataset, regime_path
     from src.prediction.model import QuantileReturnModel
-    from src.utils.safe import safe_fetch
 
-    # Validate horizons up front (raises ValueError on an unknown label).
+    # Validate horizons up front (raises ValueError on an unknown label), and that each is measured
+    # on the bar interval being trained on: "1h" on daily bars would silently train a 1-day target.
     for h in horizons:
         horizon_to_steps(h)
+        if horizon_to_interval(h) != interval:
+            raise ValueError(
+                f"horizon {h!r} is measured on {horizon_to_interval(h)!r} bars, not {interval!r}"
+            )
 
-    prices = fetch_prices(ticker, start=start, end=end, interval=interval)
-    if peers:
-        sector_returns = fetch_returns_matrix(
-            [ticker, *peers], start=start, end=end, interval=interval
-        )
-    else:
-        sector_returns = prices[["log_return"]].rename(columns={"log_return": ticker})
+    # One feature path for training, evaluation and forecasting (see prediction/dataset.py): enabled
+    # sources are strict (a failure raises), and the regime classifier is fit on the whole training
+    # window and saved beside the model so serving can compute the same ``regime_label``.
+    ds = build_dataset(
+        DatasetConfig(
+            ticker=ticker,
+            start=start,
+            end=end,
+            interval=interval,
+            peers=tuple(peers or ()),
+            use_vix=use_vix,
+            use_trends=use_trends,
+            use_insider_flow=use_insider_flow,
+            use_news_archive=use_news_archive,
+            lookback_days=lookback_days,
+        ),
+        regime="fit_all" if use_vix else "none",
+    )
+    features = ds.features
 
-    # Point-in-time news reader (live sentiment) when requested.
-    if use_news_archive:
-        from src.ingestion.news_archive import make_archive_reader
-
-        articles_by_time = make_archive_reader(ticker, lookback_days=lookback_days)
-    else:
-        articles_by_time = lambda _as_of: []  # noqa: E731 - tiny inline provider
-
-    # Opt-in enrichment sources fetched over the training window (each degrades
-    # to a neutral feature on failure).
-    trends = None
-    if use_trends:
-        from src.ingestion.trends import fetch_trends
-
-        trends = safe_fetch("trends", lambda: fetch_trends(ticker, start=start, end=end))
-    insider_flow = None
-    if use_insider_flow:
-        from src.ingestion.form4 import fetch_form4
-
-        insider_flow = safe_fetch(
-            "form4", lambda: fetch_form4(ticker, after=pd.Timestamp(start), limit=1000)
-        )
-    vix = None
-    regime_classifier = None
-    if use_vix:
-        vix = safe_fetch(
-            "vix",
-            lambda: fetch_prices("^VIX", start=start, end=end, interval=interval)["close"],
-        )
-    if vix is not None:
-        from src.prediction.regime import RegimeClassifier
-
-        regime_classifier = RegimeClassifier().fit(vix.to_numpy())
-
-    inert = [
-        name
-        for name, active in [
-            ("sentiment_agg/estimated_lag_hours", use_news_archive),
-            ("sector_proximity", bool(peers)),
-            ("regime_label", vix is not None),
-            ("search_interest_zscore", trends is not None),
-            ("insider_flow_npr", insider_flow is not None),
-        ]
-        if not active
-    ]
-    if inert:
-        logger.warning(
-            "train_model: the following features are neutral in this run: %s. "
-            "Enable --peers / --use-news-archive / --use-vix / --use-trends / "
-            "--use-insider-flow to activate them.",
-            ", ".join(inert),
-        )
-
-    features = build_feature_matrix(
-        ticker,
-        prices.index,
-        articles_by_time=articles_by_time,
-        prices=prices,
-        sector_returns=sector_returns,
-        vix=vix,
-        regime_classifier=regime_classifier,
-        trends=trends,
-        insider_flow=insider_flow,
-    ).dropna()
-
+    # Same target as the evaluation harness: the cumulative log-return over the whole horizon.
     targets = {
-        h: prices["log_return"].shift(-horizon_to_steps(h)).reindex(features.index)
+        h: forward_log_return(ds.log_returns, horizon_to_steps(h)).reindex(features.index)
         for h in horizons
     }
 
@@ -157,6 +107,8 @@ def train(
     out_path = Path(out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     model.save(str(out_path))
+    if ds.regime_classifier is not None:
+        ds.regime_classifier.save(str(regime_path(out_path)))
     logger.info("Saved model (%d rows, horizons=%s) -> %s", len(features), list(horizons), out_path)
     return model
 
