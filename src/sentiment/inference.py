@@ -41,11 +41,17 @@ def _label_indices(model: BertForSequenceClassification) -> tuple[int, int]:
     return _pos_idx, _neg_idx
 
 
+def _device() -> torch.device:
+    """A GPU when one is visible, else CPU. Both run in fp32, so scores agree to ~1e-4."""
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 def _load_model() -> tuple[BertTokenizer, BertForSequenceClassification]:
     global _tokenizer, _model
     if _tokenizer is None or _model is None:
         _tokenizer = BertTokenizer.from_pretrained(_MODEL_NAME)
         _model = BertForSequenceClassification.from_pretrained(_MODEL_NAME)
+        _model.to(_device())
         _model.eval()
     return _tokenizer, _model
 
@@ -62,7 +68,7 @@ def score_text(text: str, max_length: int = 512) -> float:
         truncation=True,
         max_length=max_length,
         padding=True,
-    )
+    ).to(_device())
     with torch.no_grad():
         logits = model(**inputs).logits
     probs = torch.softmax(logits, dim=1).squeeze()
@@ -79,7 +85,7 @@ def score_batch(texts: list[str], max_length: int = 512) -> list[float]:
         truncation=True,
         max_length=max_length,
         padding=True,
-    )
+    ).to(_device())
     with torch.no_grad():
         logits = model(**inputs).logits
     probs = torch.softmax(logits, dim=1)  # (N, 3)
