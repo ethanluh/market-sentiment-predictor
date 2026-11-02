@@ -5,6 +5,13 @@ from __future__ import annotations
 import sys
 
 import pytest
+from hypothesis import settings
+
+# Timing is not under test, and the first sklearn/scipy call is slow, so a wall-clock
+# deadline only produces flaky failures. Inputs stay random so new cases get explored;
+# a failure prints a reproduce_failure blob.
+settings.register_profile("project", deadline=None, print_blob=True)
+settings.load_profile("project")
 
 
 @pytest.fixture
