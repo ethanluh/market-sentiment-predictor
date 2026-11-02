@@ -14,6 +14,9 @@ Sources (``--source``):
                       ~2022 and is ticker-native, so ``--start`` / ``--end`` can
                       backfill real history in one run. Needs
                       ``ALPHAVANTAGE_API_KEY``.
+  - ``alpaca``        Alpaca Market Data news (Benzinga-sourced, ticker-tagged,
+                      history from 2015 per Alpaca's launch post). ``--start`` is
+                      required. Needs ``ALPACA_PAPER_KEY_ID`` / ``ALPACA_PAPER_SECRET_KEY``.
 
 Usage:
     python scripts/build_news_archive.py --ticker AAPL --start 2024-01-01
@@ -26,7 +29,7 @@ from __future__ import annotations
 import argparse
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 # Allow running directly (python scripts/build_news_archive.py) by putting the
@@ -45,6 +48,15 @@ def _fetch_articles(
         from src.ingestion.alpha_vantage_news import fetch_alpha_vantage_news
 
         return fetch_alpha_vantage_news(ticker, time_from=start, time_to=end)
+    if source == "alpaca":
+        from src.ingestion.alpaca_news import fetch_alpaca_news
+
+        if start is None:
+            raise ValueError("--start is required for --source alpaca")
+        if end is not None and end.time() == datetime.min.time():
+            # A date-only --end means "through that day"; midnight would exclude it entirely.
+            end = end + timedelta(days=1) - timedelta(microseconds=1)
+        return fetch_alpaca_news(ticker, start=start, end=end)
     if source == "newsapi":
         from src.ingestion.news import fetch_news
 
@@ -87,12 +99,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--source",
         default="newsapi",
-        choices=["newsapi", "alphavantage"],
+        choices=["newsapi", "alphavantage", "alpaca"],
         help="ingestion source (default: newsapi)",
     )
     parser.add_argument("--start", default=None, help="ISO date; earliest publish date to keep")
     parser.add_argument(
-        "--end", default=None, help="ISO date; latest publish date (alphavantage only)"
+        "--end", default=None, help="ISO date; latest publish date (alphavantage and alpaca)"
     )
     args = parser.parse_args(argv)
 
