@@ -66,6 +66,10 @@ python -m src.pipeline.run --ticker AAPL --horizon 1d --model-path models/aapl.j
 python -m src.prediction.backtest --ticker AAPL --start 2023-01-01 --end 2024-01-01 \
     --use-trends --use-insider-flow --use-vix
 
+# Leakage-controlled eval harness (purged walk-forward, per-row baselines, significance
+# tests); synthetic data only for now. signal=0 is a no-edge control.
+python -m src.eval.run --synthetic --signal 0.5 --horizon 1d --ablation
+
 # Serve the prediction API
 python -m src.pipeline.api          # POST /predict, GET /health on :8000
 
