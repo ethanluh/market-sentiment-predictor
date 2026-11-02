@@ -31,17 +31,12 @@ pandas-market-calendars>=4.3.0,<6.0
 # Serving
 fastapi>=0.111.0,<1.0
 uvicorn>=0.30.0,<1.0
-httpx>=0.27.0,<1.0          # FastAPI TestClient
 
 # Config
 python-dotenv>=1.0.0,<2.0
 
-# Dev / testing
-pytest>=8.0.0,<9.0
-pytest-cov>=5.0.0,<7.0
-black>=24.0.0,<26.0
-isort>=5.13.0,<7.0
-mypy>=1.10.0,<2.0
+# Test / lint / type tooling is in requirements-dev.txt, not here, so the
+# serving image does not ship it.
 
 # --- Optional (not required by the core pipeline) ---
 # Orchestration is a lightweight in-process sequential flow (src/pipeline/run.py),

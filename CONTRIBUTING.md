@@ -14,11 +14,12 @@ with network clients and FinBERT mocked. Run the same gates locally:
 black --check src tests scripts
 isort --check-only src tests scripts
 mypy src
-pytest tests/ -v
+pytest tests/ -v --cov
 ```
 
 (`black src tests scripts && isort src tests scripts` to autoformat.) `pytest`
-reads its options from `pyproject.toml`; CI invokes it as `pytest tests -q`.
+reads its options from `pyproject.toml`; CI invokes it as `pytest tests -q --cov`
+and fails below the 90% coverage floor set there.
 
 ## Merge policy
 

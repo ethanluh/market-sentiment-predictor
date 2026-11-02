@@ -134,12 +134,12 @@ models/           # trained model artifacts (gitignored)
 
 ## Development
 
-CI (GitHub Actions, `.github/workflows/ci.yml`) runs `black --check`, `isort --check-only`, `mypy src`, and `pytest` on every push/PR using the lightweight `requirements-dev.txt` (heavy/network deps are mocked in tests).
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs `black --check`, `isort --check-only`, `mypy src`, and `pytest --cov` (90% floor) on Python 3.11 and 3.12 for every push/PR, using the lightweight `requirements-dev.txt` (heavy/network deps are mocked in tests). A second job builds the serving image from `requirements.txt`, which no longer includes test or lint tooling; install `requirements-dev.txt` as well to run the tests locally.
 
 ```bash
 black src tests scripts && isort src tests scripts
 mypy src
-pytest tests -q
+pytest tests -q --cov
 ```
 
 ## Dependencies
