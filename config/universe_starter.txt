@@ -1,0 +1,37 @@
+# Starter trading universe: liquid large caps, at least one per GICS sector. One ticker per line.
+# SPY is the benchmark for evaluation only and is never traded. Edit freely; the list is the
+# only place tickers are chosen.
+# Information technology
+AAPL
+MSFT
+NVDA
+# Communication services
+GOOGL
+META
+# Consumer discretionary
+AMZN
+HD
+# Consumer staples
+PG
+KO
+WMT
+# Health care
+JNJ
+UNH
+LLY
+# Financials
+JPM
+BAC
+V
+# Industrials
+CAT
+HON
+# Energy
+XOM
+CVX
+# Utilities
+NEE
+# Materials
+LIN
+# Real estate
+PLD

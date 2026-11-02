@@ -55,7 +55,10 @@ def run_cycle(
     bars = broker.get_bars(sorted(set(targets) | set(positions)))
     prices = {t: b.price for t, b in bars.items()}
 
-    ledger.append("forecasts", {"as_of": as_of, "forecasts": [asdict(f) for f in forecasts]})
+    ledger.append(
+        "forecasts",
+        {"as_of": as_of, "forecasts": [asdict(f) for f in forecasts], "dry_run": dry_run},
+    )
 
     orders = plan_orders(targets, positions, account.equity, prices, as_of, cfg)
     attempted = ledger.attempted_client_ids()

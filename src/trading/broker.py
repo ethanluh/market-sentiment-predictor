@@ -22,6 +22,8 @@ class Broker(Protocol):
         """The broker's current market date (never the caller's clock)."""
         ...
 
+    def is_market_open(self) -> bool: ...
+
     def get_account(self) -> AccountSnapshot: ...
 
     def get_positions(self) -> dict[str, int]: ...
@@ -45,8 +47,10 @@ class FakeBroker:
         today: date,
         positions: dict[str, int] | None = None,
         last_equity: float | None = None,
+        market_open: bool = False,
     ) -> None:
         self._today = today
+        self._market_open = market_open
         self.cash = cash
         self.bars = dict(bars)
         self.positions = dict(positions or {})
@@ -60,6 +64,9 @@ class FakeBroker:
 
     def today(self) -> date:
         return self._today
+
+    def is_market_open(self) -> bool:
+        return self._market_open
 
     def get_account(self) -> AccountSnapshot:
         return AccountSnapshot(equity=self._equity(), cash=self.cash, last_equity=self._last_equity)
