@@ -80,7 +80,9 @@ earlier". Check the broker, resolve it by hand, and rerun on the next market dat
   forecast source must reuse the training feature builder before `--submit` is meaningful.
 - **`estimated_lag_hours`** is nearly constant for press and retail origins (see
   `docs/graph_model.md`). The ablation in `src/eval` shows whether the feature helps at all.
-- The model has not yet shown an edge on historical data. Run `src/eval` first.
+- **The model failed the historical gate** (2026-11-02, `docs/results.md`): worse than the naive baselines on
+  all 23 tickers, intervals overconfident, no gain from sentiment. Do not use `--submit` with it. A model must
+  pass `src/eval/gate.py` on a holdout it was not selected on before any paper trading.
 
 ## Scheduling
 
