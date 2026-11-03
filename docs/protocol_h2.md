@@ -103,7 +103,7 @@ development test dates of the relative differential averaged across tickers on t
 1. Rank the eight eligible candidates by `S(c, fhs)`. The **frozen overall winner** is the lowest; candidates within 0.001
    of the lowest are tied and the earliest in the complexity order wins.
 2. The **best `price` candidate** and **best `news` candidate** are chosen the same way within their feature set; both are
-   also frozen (for H2b). The overall winner is whichever of the two has the lower `S(c, fhs)`.
+   also frozen (for H2b). The overall winner is the step-1 winner over all eight (so the tolerance is applied once).
 3. **H2a is rejected on development, and the holdout is not opened,** unless the overall winner has `S <= -0.005` (at least
    0.5% lower loss) against each of `fhs`, `garch` and `fhs-pooled`. In that case the featureless forecasters are the
    answer and the protocol ends there.
@@ -137,17 +137,15 @@ permit paper or live trading.
 
 ## One shot
 
-`src/eval/protocol.py` (a later change, before the holdout) freezes the chosen candidates with a hash and the git commit,
-refuses to run the holdout without a matching freeze, and refuses a second run. Re-running for any reason requires a new
-hypothesis id and is reported as a second test, not as a replacement.
-
-## Code that must exist before the development run (implemented in later changes)
-
-- The pooled model, with exactly the estimators above, and a pooled walk-forward evaluator that emits per-ticker results in
-  return units (`src/prediction/vol_scaled.py`, `src/eval/pooled.py`).
-- The gate generalised to several reference baselines, a minimum-usable-ticker fraction, and a model-versus-model panel test
-  for H2b (`src/eval/gate.py`, `src/eval/panel.py`).
-- The freeze and one-shot guard (`src/eval/protocol.py`).
+`src/eval/protocol.py` and `python -m src.eval.h2` enforce the sequence: `dev` (data up to 2023-12-31 only), `freeze`
+(refuses a dirty tree, a selection that fails the materiality rule, or code changed since `dev`), then `holdout`, which
+refuses unless the freeze file is committed, its fingerprint and the hash of every Python file under `src/`, the protocol
+text and the universe still match, and the freeze commit is an ancestor of HEAD. The holdout needs an explicit
+`--snapshot` and the frozen universe, and claims a marker file before evaluating; a second claim is refused, and so is
+a claim when the marker was ever committed. This is a process guard, not tamper-proofing: a person can delete the
+untracked marker or run from another clone. The write-up commits the marker and says if it was ever deleted. After a
+crash that follows the claim, the marker is deleted deliberately and that is reported. Re-running for any other reason
+requires a new hypothesis id and is reported as a second test.
 
 ## What will be reported regardless of outcome
 
@@ -176,3 +174,9 @@ up as plainly as a pass.
   excluded tickers leave the panel too and capped them at 25%; made per-ticker p-values use the combined HAC and block-bootstrap
   test (a code change made with this amendment); added the estimator settings and seed; stated the standardised-versus-return
   loss mismatch.
+- **A2, 2026-11-03 (before any development run; the holdout is unopened).** After a second independent review: the
+  freeze hash now covers every Python file under `src/`, the protocol text and the universe (not a short list); the
+  holdout requires the frozen universe and an explicit price snapshot; the marker check also reads git history; `freeze`
+  refuses when code changed since `dev`; the overall winner is the single step-1 pick over all eight candidates (the first
+  draft applied the tolerance twice); the one-shot section states plainly that the guard is procedural. The section listing
+  code that must exist before development is removed because that code now exists.
