@@ -29,7 +29,7 @@ from src.eval.metrics import (
     quantile_hit_rates,
     weighted_interval_score_per_row,
 )
-from src.eval.significance import block_bootstrap_ci, diebold_mariano
+from src.eval.significance import block_bootstrap_ci, mean_differential_test
 from src.eval.splits import purged_walk_forward
 from src.eval.targets import forward_log_return
 from src.eval.trading import ANNUALISATION, annualized_sharpe, buy_and_hold_pnl, trade_pnl
@@ -170,7 +170,9 @@ def summarize(result: EvalResult, *, cost_bps: float, n_boot: int, seed: int) ->
         if name == "model":
             continue
         base_row_loss = mean_pinball_per_row(y, p)
-        stat, p_value = diebold_mariano(model_row_loss, base_row_loss, h=steps)
+        # Same test as the panel: the larger of a Newey-West HAC p and a block-bootstrap p, because the
+        # loss differential is persistent (volatility regimes), not just overlapping.
+        stat, p_hac, p_boot = mean_differential_test(model_row_loss - base_row_loss, steps, seed)
         lo, hi = block_bootstrap_ci(
             lambda a, b: float(np.mean(a - b)),
             model_row_loss,
@@ -183,7 +185,9 @@ def summarize(result: EvalResult, *, cost_bps: float, n_boot: int, seed: int) ->
             "loss_diff": float(np.mean(model_row_loss - base_row_loss)),
             "diff_ci95": [lo, hi],
             "dm_stat": stat,
-            "dm_p": p_value,
+            "dm_p": max(p_hac, p_boot),
+            "dm_p_hac": p_hac,
+            "p_bootstrap": p_boot,
         }
 
     p50 = result.preds["model"][:, 1]

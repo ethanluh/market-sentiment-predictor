@@ -96,3 +96,20 @@ def block_bootstrap_mean_p(d: np.ndarray, block: int, n_boot: int = 2000, seed: 
     idx = (starts[:, :, None] + np.arange(block)[None, None, :]).reshape(n_boot, -1)[:, :n]
     means = centered[idx].mean(axis=1)
     return float((np.sum(np.abs(means) >= abs(d.mean())) + 1) / (n_boot + 1))
+
+
+def mean_differential_test(d: np.ndarray, h: int, seed: int = 0) -> tuple[float, float, float]:
+    """
+    Test that the mean of a loss-differential series is zero; returns ``(stat, p_hac, p_bootstrap)``.
+
+    ``p_hac`` is a Diebold-Mariano test with Newey-West lags (never fewer than the h-1 that
+    overlapping horizons force). ``p_bootstrap`` is a moving-block bootstrap with blocks of about
+    ``4 * n^(1/3)``. Both are needed because the differential is persistent (volatility regimes), not
+    just overlapping: in simulation on AR(0.8) noise the old h-1-lag test rejected a true null 22%
+    of the time, this pair about 9%. It stays somewhat liberal for extremely persistent series
+    (AR 0.9 and above), which the gate's other criteria are there to backstop.
+    """
+    n = len(d)
+    stat, p_hac = diebold_mariano(d, np.zeros(n), h=h, lags=min(newey_west_lags(n, h), n - 1))
+    p_boot = block_bootstrap_mean_p(d, block=max(2 * h, int(4 * n ** (1 / 3))), seed=seed)
+    return stat, p_hac, p_boot

@@ -16,7 +16,7 @@ import pandas as pd
 
 from src.eval.metrics import mean_pinball_per_row
 from src.eval.runner import EvalResult
-from src.eval.significance import block_bootstrap_mean_p, diebold_mariano, newey_west_lags
+from src.eval.significance import mean_differential_test  # noqa: F401 (re-exported)
 
 
 @dataclass(frozen=True)
@@ -45,23 +45,6 @@ def relative_loss_differential(result: EvalResult, baseline: str) -> pd.Series:
     if scale <= 0.0:
         raise ValueError("the baseline's mean loss is not positive")
     return pd.Series((model - base) / scale, index=result.index)
-
-
-def mean_differential_test(d: np.ndarray, h: int, seed: int = 0) -> tuple[float, float, float]:
-    """
-    Test that the mean of a loss-differential series is zero; returns ``(stat, p_hac, p_bootstrap)``.
-
-    ``p_hac`` is a Diebold-Mariano test with Newey-West lags (never fewer than the h-1 that
-    overlapping horizons force). ``p_bootstrap`` is a moving-block bootstrap with blocks of about
-    ``4 * n^(1/3)``. Both are needed because the differential is persistent (volatility regimes), not
-    just overlapping: in simulation on AR(0.8) noise the old h-1-lag test rejected a true null 22%
-    of the time, this pair about 9%. It stays somewhat liberal for extremely persistent series
-    (AR 0.9 and above), which the gate's other criteria are there to backstop.
-    """
-    n = len(d)
-    stat, p_hac = diebold_mariano(d, np.zeros(n), h=h, lags=min(newey_west_lags(n, h), n - 1))
-    p_boot = block_bootstrap_mean_p(d, block=max(2 * h, int(4 * n ** (1 / 3))), seed=seed)
-    return stat, p_hac, p_boot
 
 
 def _longest_run(mask: pd.Series) -> pd.Series:
