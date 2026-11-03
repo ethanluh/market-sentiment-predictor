@@ -22,10 +22,11 @@ def test_ablation_runs_every_config(tmp_path: Path) -> None:
     assert {"price_only", "full", "price+sentiment"} <= set(json.loads(out.read_text()))
 
 
-def test_live_mode_is_refused() -> None:
-    with pytest.raises(SystemExit) as e:
-        main([])
-    assert e.value.code == 2
+def test_a_mode_is_required_and_the_modes_are_exclusive() -> None:
+    for argv in ([], ["--synthetic", "--live"]):
+        with pytest.raises(SystemExit) as e:
+            main(argv)
+        assert e.value.code == 2
 
 
 def test_regime_ablation_actually_changes_the_model(tmp_path: Path) -> None:
