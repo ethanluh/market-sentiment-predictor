@@ -171,7 +171,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "price_snapshot": snapshot,
                 "universe": list(_universe(args.universe)),
-                "code_sha256": protocol.code_hash(repo),
+                "code_sha256": protocol.code_hash(repo, protocol.H2),
                 "selection": asdict(sel),
             },
             dev_path,
@@ -182,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.step == "freeze":
         dev = json.loads(dev_path.read_text(encoding="utf-8"))
-        if dev["code_sha256"] != protocol.code_hash(repo):
+        if dev["code_sha256"] != protocol.code_hash(repo, protocol.H2):
             raise protocol.ProtocolError(
                 "the code changed since the development run; rerun dev before freezing"
             )
@@ -192,18 +192,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"froze {doc['frozen']} at {doc['git_commit']}; commit {freeze_path} now")
         return 0
 
-    protocol.require_unclaimed(marker, repo)
-    freeze_doc = protocol.verify_freeze(freeze_path, repo)
+    protocol.require_unclaimed(marker, repo, protocol.H2)
+    freeze_doc = protocol.verify_freeze(freeze_path, repo, protocol.H2)
     if not args.snapshot:
         parser.error("the holdout needs an explicit --snapshot so the data is pinned and recorded")
     if list(_universe(args.universe)) != freeze_doc["context"]["universe"]:  # type: ignore[index]
         raise protocol.ProtocolError("the universe differs from the one frozen with the selection")
     panel, snapshot = _panel_from_args(args)  # loading shows no outcomes, so a load failure is free
-    protocol.claim_holdout(marker, freeze_doc)  # before any evaluation: the shot is spent from here
+    protocol.claim_holdout(
+        marker, freeze_doc, protocol.H2
+    )  # before any evaluation: the shot is spent from here
     report = run_holdout(panel, freeze_doc["frozen"])  # type: ignore[arg-type]
     report["price_snapshot"] = snapshot
     _save(report, holdout_path)
-    protocol.complete_holdout(marker, holdout_path)
+    protocol.complete_holdout(marker, holdout_path, protocol.H2)
     print(json.dumps(_clean({k: report[k] for k in ("h2a", "h2b")}), indent=2))
     print(f"saved {holdout_path}")
     return 0
