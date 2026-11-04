@@ -1,0 +1,81 @@
+{
+  "price_snapshot": "2026-11-02",
+  "universe": [
+    "AAPL",
+    "MSFT",
+    "NVDA",
+    "GOOGL",
+    "META",
+    "AMZN",
+    "HD",
+    "PG",
+    "KO",
+    "WMT",
+    "JNJ",
+    "UNH",
+    "LLY",
+    "JPM",
+    "BAC",
+    "V",
+    "CAT",
+    "HON",
+    "XOM",
+    "CVX",
+    "NEE",
+    "LIN",
+    "PLD"
+  ],
+  "code_sha256": "86223e6dfd7e5e38e234459dddd49700ee8b863db0df4e3bbbe73e8b865b9689",
+  "selection": {
+    "scores": {
+      "lq-a0.01-price": {
+        "fhs": -0.013206342285010152,
+        "garch": 0.004047207040730286,
+        "fhs-pooled": 0.0002596617232624481
+      },
+      "lq-a0.01-news": {
+        "fhs": -0.013540087441929105,
+        "garch": 0.003712878048334981,
+        "fhs-pooled": -7.734406155486449e-05
+      },
+      "lq-a0.001-price": {
+        "fhs": -0.010945978582141719,
+        "garch": 0.0063614266737414054,
+        "fhs-pooled": 0.002559286162853779
+      },
+      "lq-a0.001-news": {
+        "fhs": -0.00974272464969907,
+        "garch": 0.007596834013113557,
+        "fhs-pooled": 0.0037858953693065875
+      },
+      "gb-50-price": {
+        "fhs": -0.010704853518029344,
+        "garch": 0.006608717193020301,
+        "fhs-pooled": 0.002799882202031213
+      },
+      "gb-50-news": {
+        "fhs": -0.012484065725365555,
+        "garch": 0.004808122071727898,
+        "fhs-pooled": 0.0010048187721682959
+      },
+      "gb-100-price": {
+        "fhs": -0.0080410425146108,
+        "garch": 0.009322749569214627,
+        "fhs-pooled": 0.005500616193074086
+      },
+      "gb-100-news": {
+        "fhs": -0.009996394977530658,
+        "garch": 0.0073407827274326615,
+        "fhs-pooled": 0.0035280351596917417
+      }
+    },
+    "best_price": "lq-a0.01-price",
+    "best_news": "lq-a0.01-news",
+    "overall": "lq-a0.01-price",
+    "proceed": false,
+    "reasons": [
+      "lq-a0.01-price: S vs garch = +0.4047%, need <= -0.50%",
+      "lq-a0.01-price: S vs fhs-pooled = +0.0260%, need <= -0.50%"
+    ]
+  }
+}
