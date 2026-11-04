@@ -99,4 +99,9 @@ drawdown comparison, and H3c.
 
 ## Amendments
 
-None yet.
+- **A1 (before any run).** Clarifications from the code review of `src/eval/voltarget.py`, written before any result
+  existed. (i) An unavailable ticker is flat: its first available bar, and any re-entry after a gap, is charged from a
+  previous weight of 0, and an exit is free because there is no bar to trade it on. (ii) `rolling63` skips missing
+  returns, as `ewma_vol` does, so both forecasters treat gaps alike. (iii) The 20-ticker rule applies from the first
+  scored bar (2020-01-02) on, and a scored bar with no available ticker raises; earlier bars are warm-up. (iv) The
+  period bounds are by UTC calendar date, both inclusive. (v) The tie rule compares with a 1e-12 float guard.
