@@ -105,3 +105,8 @@ drawdown comparison, and H3c.
   returns, as `ewma_vol` does, so both forecasters treat gaps alike. (iii) The 20-ticker rule applies from the first
   scored bar (2020-01-02) on, and a scored bar with no available ticker raises; earlier bars are warm-up. (iv) The
   period bounds are by UTC calendar date, both inclusive. (v) The tie rule compares with a 1e-12 float guard.
+- **A2 (before any run).** Written with the CLI, before any result existed. (i) The holdout must use the same price
+  snapshot as development; a different `--snapshot` is refused, because adjusted closes are revised over time. (ii)
+  Per-ticker figures are informational point estimates. A name that is not available on every bar of the period, or has
+  fewer than 42 available bars, is reported as skipped with the count, and never scored on spliced windows. A skipped
+  name does not affect the pooled result.

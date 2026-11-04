@@ -8,7 +8,9 @@ from src.prediction.volatility import ewma_vol
 START = "2020-01-02"
 
 
-def panel(persist: float, n: int = 1300, k: int = 25, seed: int = 0) -> pd.DataFrame:
+def panel(
+    persist: float, n: int = 1300, k: int = 25, seed: int = 0, drift: float = 0.0
+) -> pd.DataFrame:
     """Daily log returns of k tickers sharing one volatility factor (AR(1) log-vol, ``persist``)."""
     rng = np.random.default_rng(seed)
     idx = pd.bdate_range("2019-09-02", periods=n, tz="UTC")
@@ -18,7 +20,7 @@ def panel(persist: float, n: int = 1300, k: int = 25, seed: int = 0) -> pd.DataF
         log_vol[t] = persist * log_vol[t - 1] + 0.15 * shocks[t]
     z = rng.standard_t(5, size=(n, k)) / np.sqrt(5 / 3)
     beta = rng.uniform(0.8, 1.2, k)
-    data = 0.01 * np.exp(log_vol)[:, None] * beta[None, :] * z
+    data = 0.01 * np.exp(log_vol)[:, None] * beta[None, :] * z + drift
     return pd.DataFrame(data, index=idx, columns=[f"T{i}" for i in range(k)])
 
 
