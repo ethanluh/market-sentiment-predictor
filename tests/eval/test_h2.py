@@ -75,14 +75,14 @@ def test_cli_holdout_claims_the_shot_before_evaluating_and_cannot_run_twice(
     monkeypatch.setattr(
         h2.protocol,
         "verify_freeze",
-        lambda path, repo: {
+        lambda path, repo, proto: {
             "git_commit": "abc",
             "frozen": frozen,
             "context": {"universe": ["A", "B"]},
         },
     )
     monkeypatch.setattr(h2, "_panel_from_args", lambda args: (panel, "2026-11-03"))
-    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo: None)
+    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo, proto: None)
     monkeypatch.setattr(h2, "_universe", lambda path: ("A", "B"))
 
     def fake(p: Panel, f: dict) -> dict:
@@ -104,9 +104,13 @@ def test_cli_holdout_load_failure_does_not_spend_the_shot(
     monkeypatch.setattr(
         h2.protocol,
         "verify_freeze",
-        lambda path, repo: {"git_commit": "abc", "frozen": {}, "context": {"universe": ["A"]}},
+        lambda path, repo, proto: {
+            "git_commit": "abc",
+            "frozen": {},
+            "context": {"universe": ["A"]},
+        },
     )
-    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo: None)
+    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo, proto: None)
     monkeypatch.setattr(h2, "_universe", lambda path: ("A",))
 
     def boom(args: object) -> None:
@@ -122,9 +126,11 @@ def test_cli_holdout_needs_an_explicit_snapshot_and_the_frozen_universe(
     tmp_path: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     out = tmp_path / "h2"  # type: ignore[operator]
-    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo: None)
+    monkeypatch.setattr(h2.protocol, "require_unclaimed", lambda marker, repo, proto: None)
     monkeypatch.setattr(
-        h2.protocol, "verify_freeze", lambda path, repo: {"context": {"universe": ["A", "B"]}}
+        h2.protocol,
+        "verify_freeze",
+        lambda path, repo, proto: {"context": {"universe": ["A", "B"]}},
     )
     with pytest.raises(SystemExit):  # argparse error: no --snapshot
         h2.main(["holdout", "--out-dir", str(out)])
@@ -142,7 +148,7 @@ def test_cli_dev_saves_the_selection_and_freeze_reads_it_back(
     out = tmp_path / "h2"  # type: ignore[operator]
     sel = Selection({"c": {"fhs": -0.02}}, "p", "n", "n", True, [])
     monkeypatch.setattr(h2, "_universe", lambda path: ("A", "B"))
-    monkeypatch.setattr(h2.protocol, "code_hash", lambda repo: "h")
+    monkeypatch.setattr(h2.protocol, "code_hash", lambda repo, proto: "h")
     monkeypatch.setattr(h2, "_panel_from_args", lambda args: (panel, "2026-11-03"))
     monkeypatch.setattr(h2, "run_dev", lambda p: {})
     monkeypatch.setattr(h2, "select", lambda r: sel)
@@ -159,6 +165,6 @@ def test_cli_dev_saves_the_selection_and_freeze_reads_it_back(
     assert seen["sel"] == sel
     assert seen["context"] == {"universe": ["A", "B"], "dev_snapshot": "2026-11-03"}
 
-    monkeypatch.setattr(h2.protocol, "code_hash", lambda repo: "changed")
+    monkeypatch.setattr(h2.protocol, "code_hash", lambda repo, proto: "changed")
     with pytest.raises(protocol.ProtocolError, match="rerun dev"):
         h2.main(["freeze", "--out-dir", str(out)])

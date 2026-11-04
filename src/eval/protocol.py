@@ -1,5 +1,5 @@
 """
-One-shot enforcement for the H2 holdout.
+One-shot enforcement for a pre-registered holdout (H2 now; H3 supplies its own ``Protocol``).
 
 ``freeze`` records the chosen candidates with a fingerprint of the configuration and a hash of the
 code that defines them. ``verify_freeze`` refuses to continue when anything differs, when the git
@@ -18,7 +18,8 @@ from __future__ import annotations
 import hashlib
 import json
 import subprocess
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,7 +27,6 @@ from src.eval import h2_gate, h2_select, pooled
 from src.eval.h2_select import Selection
 from src.prediction import vol_scaled
 
-HYPOTHESIS = "H2"
 DEV_END = "2023-12-31"
 HOLDOUT_START = "2024-01-01"
 POOL_START = pooled.POOL_START
@@ -35,6 +35,24 @@ EXTRA_FROZEN = ("docs/protocol_h2.md", "config/universe_starter.txt")
 
 class ProtocolError(RuntimeError):
     """A pre-registration rule was about to be broken."""
+
+
+@dataclass(frozen=True)
+class Protocol:
+    """What differs between hypotheses: the id, the non-code files it fixes, and its constants."""
+
+    hypothesis: str
+    extra_frozen: tuple[str, ...]
+    fingerprint: Callable[[], dict[str, object]]
+
+
+def _fingerprint(proto: Protocol) -> dict[str, object]:
+    fp = proto.fingerprint()
+    if fp.get("hypothesis") != proto.hypothesis:
+        raise ProtocolError(
+            f"the {proto.hypothesis} fingerprint names {fp.get('hypothesis')!r}; the two must agree"
+        )
+    return fp
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -52,25 +70,25 @@ def _require_clean_tree(repo: Path) -> None:
         raise ProtocolError(f"the git tree is not clean; commit or discard first:\n{dirty}")
 
 
-def frozen_files(repo: Path) -> tuple[str, ...]:
+def frozen_files(repo: Path, proto: Protocol) -> tuple[str, ...]:
     """Every Python file under ``src/`` plus the protocol text and the universe: any change to code
     that can affect a result invalidates the freeze."""
     py = sorted(str(p.relative_to(repo)) for p in (repo / "src").rglob("*.py"))
-    return (*EXTRA_FROZEN, *py)
+    return (*proto.extra_frozen, *py)
 
 
-def code_hash(repo: Path, files: tuple[str, ...] | None = None) -> str:
-    files = frozen_files(repo) if files is None else files
+def code_hash(repo: Path, proto: Protocol, files: tuple[str, ...] | None = None) -> str:
+    files = frozen_files(repo, proto) if files is None else files
     h = hashlib.sha256()
     for name in files:
         h.update(name.encode() + b"\0" + (repo / name).read_bytes() + b"\0")
     return h.hexdigest()
 
 
-def fingerprint() -> dict[str, object]:
+def h2_fingerprint() -> dict[str, object]:
     """Everything the protocol fixes that is not a file: constants, candidates, gate and selection rules."""
     return {
-        "hypothesis": HYPOTHESIS,
+        "hypothesis": "H2",
         "dev_end": DEV_END,
         "holdout_start": HOLDOUT_START,
         "pool_start": POOL_START,
@@ -85,33 +103,30 @@ def fingerprint() -> dict[str, object]:
     }
 
 
-def freeze(
-    selection: Selection,
+H2 = Protocol("H2", EXTRA_FROZEN, h2_fingerprint)
+
+
+def write_freeze(
+    proto: Protocol,
+    frozen: dict[str, object],
+    dev_scores: dict[str, object],
     repo: Path,
     path: Path,
     files: tuple[str, ...] | None = None,
     context: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """
-    Write the freeze file (``context`` is stored as given: the universe and the dev snapshot). Refuses an uncommitted tree, an existing freeze, and a selection the
-    protocol says must not reach the holdout.
+    Write the freeze file (``context`` is stored as given: the universe and the dev snapshot).
+    Refuses an uncommitted tree and an existing freeze.
     """
-    if not selection.proceed:
-        raise ProtocolError(
-            "the development result does not clear the protocol; the holdout stays closed: "
-            + "; ".join(selection.reasons)
-        )
     _require_clean_tree(repo)
     doc: dict[str, object] = {
-        "frozen": {
-            "overall": selection.overall,
-            "best_price": selection.best_price,
-            "best_news": selection.best_news,
-        },
-        "dev_scores": selection.scores,
-        "fingerprint": fingerprint(),
+        "hypothesis": proto.hypothesis,
+        "frozen": frozen,
+        "dev_scores": dev_scores,
+        "fingerprint": _fingerprint(proto),
         "context": context or {},
-        "code_sha256": code_hash(repo, files),
+        "code_sha256": code_hash(repo, proto, files),
         "git_commit": _git(repo, "rev-parse", "HEAD"),
         "created_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -125,16 +140,42 @@ def freeze(
     return doc
 
 
+def freeze(
+    selection: Selection,
+    repo: Path,
+    path: Path,
+    files: tuple[str, ...] | None = None,
+    context: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """Freeze the H2 selection; refuses one the protocol says must not reach the holdout."""
+    if not selection.proceed:
+        raise ProtocolError(
+            "the development result does not clear the protocol; the holdout stays closed: "
+            + "; ".join(selection.reasons)
+        )
+    frozen: dict[str, object] = {
+        "overall": selection.overall,
+        "best_price": selection.best_price,
+        "best_news": selection.best_news,
+    }
+    return write_freeze(H2, frozen, dict(selection.scores), repo, path, files, context)
+
+
 def verify_freeze(
-    path: Path, repo: Path, files: tuple[str, ...] | None = None
+    path: Path, repo: Path, proto: Protocol, files: tuple[str, ...] | None = None
 ) -> dict[str, object]:
     """Load the freeze and check it against the current code, tree and history; raise on any mismatch."""
     if not path.is_file():
         raise ProtocolError(f"no freeze file at {path}; run the freeze step first")
     doc = json.loads(path.read_text(encoding="utf-8"))
-    if doc["fingerprint"] != json.loads(json.dumps(fingerprint())):
+    if doc.get("hypothesis") != proto.hypothesis:
+        raise ProtocolError(
+            f"{path} is a freeze for {doc.get('hypothesis', 'no recorded hypothesis')}, "
+            f"not {proto.hypothesis}"
+        )
+    if doc["fingerprint"] != json.loads(json.dumps(_fingerprint(proto))):
         raise ProtocolError("the protocol constants, candidates or rules differ from the freeze")
-    if doc["code_sha256"] != code_hash(repo, files):
+    if doc["code_sha256"] != code_hash(repo, proto, files):
         raise ProtocolError("frozen code changed after the freeze; the freeze no longer applies")
     _require_clean_tree(repo)
     try:
@@ -152,13 +193,22 @@ def verify_freeze(
     return doc
 
 
-def require_unclaimed(marker: Path, repo: Path) -> None:
+def _require_own_marker(marker: Path, proto: Protocol) -> None:
+    owner = json.loads(marker.read_text(encoding="utf-8")).get("hypothesis")
+    if owner != proto.hypothesis:
+        raise ProtocolError(
+            f"{marker} belongs to {owner}, not {proto.hypothesis}; each hypothesis needs its own marker path"
+        )
+
+
+def require_unclaimed(marker: Path, repo: Path, proto: Protocol) -> None:
     """Raise if the marker exists, or was ever committed (even if later deleted)."""
     if marker.exists():
-        raise ProtocolError(_ALREADY.format(marker=marker, h=HYPOTHESIS))
+        _require_own_marker(marker, proto)
+        raise ProtocolError(_ALREADY.format(marker=marker, h=proto.hypothesis))
     if _git(repo, "log", "--all", "--oneline", "--", str(marker.resolve())):
         raise ProtocolError(
-            f"{marker} appears in git history: the {HYPOTHESIS} holdout was already run. "
+            f"{marker} appears in git history: the {proto.hypothesis} holdout was already run. "
             "A new test needs a new hypothesis id"
         )
 
@@ -169,14 +219,14 @@ _ALREADY = (
 )
 
 
-def claim_holdout(marker: Path, freeze_doc: dict[str, object]) -> None:
+def claim_holdout(marker: Path, freeze_doc: dict[str, object], proto: Protocol) -> None:
     """Create the one-shot marker; a second claim, or a claim after a crashed run, raises."""
     marker.parent.mkdir(parents=True, exist_ok=True)
     try:
         with marker.open("x", encoding="utf-8") as fh:
             json.dump(
                 {
-                    "hypothesis": HYPOTHESIS,
+                    "hypothesis": proto.hypothesis,
                     "freeze_commit": freeze_doc["git_commit"],
                     "started_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     "status": "started",
@@ -186,10 +236,12 @@ def claim_holdout(marker: Path, freeze_doc: dict[str, object]) -> None:
             )
             fh.write("\n")
     except FileExistsError:
-        raise ProtocolError(_ALREADY.format(marker=marker, h=HYPOTHESIS)) from None
+        _require_own_marker(marker, proto)
+        raise ProtocolError(_ALREADY.format(marker=marker, h=proto.hypothesis)) from None
 
 
-def complete_holdout(marker: Path, results: Path) -> None:
+def complete_holdout(marker: Path, results: Path, proto: Protocol) -> None:
+    _require_own_marker(marker, proto)
     doc = json.loads(marker.read_text(encoding="utf-8"))
     doc.update(status="completed", results=str(results))
     marker.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
